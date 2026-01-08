@@ -782,8 +782,10 @@ void DG_DrawFrame() {
 				unsigned int x = 0;
 				uint32_t *dst32 = (uint32_t *)dst;
 				for (; x + 7 < aspectOutW; x += 8) {
-					// Prefetch source data for next batch (16 pixels ahead)
-					__builtin_prefetch(&srcBuf[yLookup[x+16] * DOOMGENERIC_RESX + srcX], 0, 0);
+					// Prefetch source data for next batch (only if within bounds)
+					if (x + 16 < aspectOutW) {
+						__builtin_prefetch(&srcBuf[yLookup[x+16] * DOOMGENERIC_RESX + srcX], 0, 0);
+					}
 					
 					// Load 8 palette indices
 					byte idx0 = srcBuf[yLookup[x]   * DOOMGENERIC_RESX + srcX];
@@ -824,8 +826,10 @@ void DG_DrawFrame() {
 				unsigned int x = 0;
 				uint32_t *dst32 = (uint32_t *)dst;
 				for (; x + 7 < scaledOutW; x += 8) {
-					// Prefetch source data for next batch (16 pixels ahead)
-					__builtin_prefetch(&srcBuf[yLookup[x+16] * DOOMGENERIC_RESX + srcX], 0, 0);
+					// Prefetch source data for next batch (only if within bounds)
+					if (x + 16 < scaledOutW) {
+						__builtin_prefetch(&srcBuf[yLookup[x+16] * DOOMGENERIC_RESX + srcX], 0, 0);
+					}
 					
 					// Load 8 palette indices
 					byte idx0 = srcBuf[yLookup[x]   * DOOMGENERIC_RESX + srcX];
