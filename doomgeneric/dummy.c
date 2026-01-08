@@ -11,6 +11,7 @@
  *---------------------------------------------------------------------*/
 
 #include "doomtype.h"
+#include "doomfeatures.h"
 
 /*---------------------------------------------------------------------*
  *  local definitions                                                  *
@@ -24,9 +25,11 @@
  *  public data                                                        *
  *---------------------------------------------------------------------*/
 
+// net_client_connected and drone now defined in net_client.c when FEATURE_MULTIPLAYER is enabled
+#ifndef FEATURE_MULTIPLAYER
 boolean net_client_connected = false;
-
 boolean drone = false;
+#endif
 
 /*---------------------------------------------------------------------*
  *  private data                                                       *

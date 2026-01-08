@@ -100,7 +100,9 @@ struct _net_addr_s
 
 // magic number sent when connecting to check this is a valid client
 
-#define NET_MAGIC_NUMBER 3436803284U
+// Magic number changed in Chocolate Doom 3.1.0
+#define NET_MAGIC_NUMBER     1454104972U
+#define NET_OLD_MAGIC_NUMBER 3436803284U
 
 // header field value indicating that the packet is a reliable packet
 

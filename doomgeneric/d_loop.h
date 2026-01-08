@@ -77,5 +77,14 @@ void D_StartNetGame(net_gamesettings_t *settings,
 extern boolean singletics;
 extern int gametic, ticdup;
 
+// Receive ticcmds from network
+void D_ReceiveTic(ticcmd_t *ticcmds, boolean *players_mask);
+
+// Wait for game launch signal
+void NET_WaitForLaunch(void);
+
+// LAN server discovery
+net_addr_t *NET_FindLANServer(void);
+
 #endif
 

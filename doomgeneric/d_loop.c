@@ -37,8 +37,12 @@
 #include "net_io.h"
 #include "net_query.h"
 #include "net_server.h"
-#include "net_sdl.h"
+#include "net_socket.h"  // Use POSIX sockets instead of SDL_net
 #include "net_loop.h"
+
+// External declarations for network settings received from server
+extern net_gamesettings_t received_settings;
+extern boolean received_settings_valid;
 
 // The complete set of data for a particular tic.
 
@@ -437,15 +441,99 @@ void D_StartNetGame(net_gamesettings_t *settings,
     //    printf("Syncing netgames like Vanilla Doom.\n");
     //}
 #else
-    settings->consoleplayer = 0;
-	settings->num_players = 1;
-	settings->player_classes[0] = player_class;
-	settings->new_sync = 0;
-	settings->extratics = 1;
-	settings->ticdup = 1;
+#ifdef FEATURE_MULTIPLAYER
+    // If we're connected to a network game, send GAMESTART and wait for response
+    if (net_client_connected)
+    {
+        // Use command-line values (from d_main.c) for game settings
+        extern int startepisode;
+        extern int startmap;
+        extern int startskill;
+        extern int nomonsters;
+        extern int fastparm;
+        extern int respawnparm;
+        extern int timelimit;
+        
+        // Fill in settings to send to server
+        settings->ticdup = 1;
+        settings->extratics = 1;
+        settings->deathmatch = 1;  // Deathmatch mode
+        settings->episode = startepisode;
+        settings->map = startmap;
+        settings->skill = startskill;
+        settings->nomonsters = nomonsters;
+        settings->fast_monsters = fastparm;
+        settings->respawn_monsters = respawnparm;
+        settings->timelimit = timelimit;
+        settings->loadgame = -1;
+        settings->lowres_turn = 0;
+        settings->new_sync = 0;
+        settings->gameversion = 0;
+        settings->player_classes[0] = player_class;
+        
+        // Send GAMESTART and wait for server's response
+        extern void NET_CL_SendStartAndWait(net_gamesettings_t *settings);
+        NET_CL_SendStartAndWait(settings);
+        
+        // Now use the received settings from server
+        if (received_settings_valid)
+        {
+            // Copy all settings from what the server sent us
+            settings->consoleplayer = received_settings.consoleplayer;
+            settings->num_players = received_settings.num_players;
+            settings->deathmatch = received_settings.deathmatch;
+            settings->episode = received_settings.episode;
+            settings->map = received_settings.map;
+            settings->skill = received_settings.skill;
+            settings->nomonsters = received_settings.nomonsters;
+            settings->fast_monsters = received_settings.fast_monsters;
+            settings->respawn_monsters = received_settings.respawn_monsters;
+            settings->timelimit = received_settings.timelimit;
+            settings->loadgame = received_settings.loadgame;
+            settings->lowres_turn = received_settings.lowres_turn;
+            settings->new_sync = received_settings.new_sync;
+            settings->extratics = received_settings.extratics;
+            settings->ticdup = received_settings.ticdup;
+            
+            for (int i = 0; i < NET_MAXPLAYERS; i++)
+                settings->player_classes[i] = received_settings.player_classes[i];
+            
+            printf("D_StartNetGame: Using network settings - player %d of %d\n",
+                   settings->consoleplayer + 1, settings->num_players);
+            
+            // CRITICAL: Set localplayer so we control our own character!
+            localplayer = settings->consoleplayer;
+            
+            // Set playeringame for all players
+            for (int i = 0; i < NET_MAXPLAYERS; i++)
+                local_playeringame[i] = i < settings->num_players;
+        }
+        else
+        {
+            // Server didn't send game settings - likely a game is already in progress
+            // or there was a connection issue. Exit cleanly with error message.
+            I_Error("Failed to start network game!\n\n"
+                    "The server did not send game settings.\n"
+                    "Another game may already be in progress.\n"
+                    "Try again or connect to a different server.");
+        }
+    }
+    else
+#endif
+    {
+        // Single player defaults
+        settings->consoleplayer = 0;
+        settings->num_players = 1;
+        settings->player_classes[0] = player_class;
+        settings->new_sync = 0;
+        settings->extratics = 1;
+        settings->ticdup = 1;
+        localplayer = 0;
+        local_playeringame[0] = true;
+    }
 
-	ticdup = settings->ticdup;
-	new_sync = settings->new_sync;
+    ticdup = settings->ticdup;
+    new_sync = settings->new_sync;
 #endif
 }
 
@@ -476,7 +564,7 @@ boolean D_InitNetGame(net_connect_data_t *connect_data)
     {
         NET_SV_Init();
         NET_SV_AddModule(&net_loop_server_module);
-        NET_SV_AddModule(&net_sdl_module);
+        NET_SV_AddModule(&net_socket_module);
         NET_SV_RegisterWithMaster();
 
         net_loop_client_module.InitClient();
@@ -515,8 +603,8 @@ boolean D_InitNetGame(net_connect_data_t *connect_data)
 
         if (i > 0)
         {
-            net_sdl_module.InitClient();
-            addr = net_sdl_module.ResolveAddress(myargv[i+1]);
+            net_socket_module.InitClient();
+            addr = net_socket_module.ResolveAddress(myargv[i+1]);
 
             if (addr == NULL)
             {
