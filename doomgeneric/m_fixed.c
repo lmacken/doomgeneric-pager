@@ -15,8 +15,6 @@
 // DESCRIPTION:
 //	Fixed point implementation.
 //
-// NOTE: FixedMul is now inline in m_fixed.h for performance
-//
 
 
 
@@ -29,9 +27,21 @@
 
 
 
+
+// Fixme. __USE_C_FIXED__ or something.
+
+fixed_t
+FixedMul
+( fixed_t	a,
+  fixed_t	b )
+{
+    return ((int64_t) a * (int64_t) b) >> FRACBITS;
+}
+
+
+
 //
 // FixedDiv, C version.
-// (FixedMul moved to m_fixed.h as inline function for performance)
 //
 
 fixed_t FixedDiv(fixed_t a, fixed_t b)

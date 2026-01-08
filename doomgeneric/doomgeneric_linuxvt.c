@@ -96,10 +96,14 @@ static inline void *aligned_alloc_cached(size_t size) {
 // timing stuff
 static struct timeval startTime;
 
-// Frame rate limiter - target ~30 FPS for smooth SPI display updates
-// The SPI display can't keep up with faster rendering anyway
-#define TARGET_FRAME_TIME_MS 33  // ~30 FPS
-static uint32_t lastFrameTime = 0;
+// FPS and timing tracking
+static uint32_t frameCount = 0;
+static uint32_t lastFpsTime = 0;
+static uint32_t currentFps = 0;
+static uint32_t totalWriteTimeMs = 0;  // Accumulated write() time
+static uint32_t avgWriteTimeMs = 0;    // Average write time per frame
+static int useVsync = 0;               // If 1, fsync after write (no tearing but ~10 FPS)
+#define FPS_UPDATE_INTERVAL_MS 1000  // Update FPS every second
 
 // framebuffer stuff 
 static uint8_t *fbPtr;
@@ -588,6 +592,12 @@ void DG_Init() {
 	struct fb_var_screeninfo info;
 	struct fb_fix_screeninfo finfo;
 
+	// Check for -vsync command line arg (uses fsync for tear-free but ~10 FPS)
+	if (M_CheckParm("-vsync")) {
+		useVsync = 1;
+		printf("VSync enabled (tear-free but slower)\n");
+	}
+
 	// Set up signal handlers for clean exit
 	signal(SIGINT, cleanup_and_exit);
 	signal(SIGTERM, cleanup_and_exit);
@@ -775,40 +785,17 @@ void DG_DrawFrame() {
 				unsigned int srcX = srcXLookupAspect[y];
 				const unsigned int *yLookup = srcYLookupAspect;
 				
-				// Prefetch next row's lookup value for better cache behavior
-				__builtin_prefetch(&srcXLookupAspect[y + 1], 0, 3);
-				
-				// Process 8 pixels at a time using 32-bit writes (2 pixels per write)
+				// Process 4 pixels at a time with direct palette lookup
 				unsigned int x = 0;
-				uint32_t *dst32 = (uint32_t *)dst;
-				for (; x + 7 < aspectOutW; x += 8) {
-					// Prefetch source data for next batch (only if within bounds)
-					if (x + 16 < aspectOutW) {
-						__builtin_prefetch(&srcBuf[yLookup[x+16] * DOOMGENERIC_RESX + srcX], 0, 0);
-					}
-					
-					// Load 8 palette indices
-					byte idx0 = srcBuf[yLookup[x]   * DOOMGENERIC_RESX + srcX];
-					byte idx1 = srcBuf[yLookup[x+1] * DOOMGENERIC_RESX + srcX];
-					byte idx2 = srcBuf[yLookup[x+2] * DOOMGENERIC_RESX + srcX];
-					byte idx3 = srcBuf[yLookup[x+3] * DOOMGENERIC_RESX + srcX];
-					byte idx4 = srcBuf[yLookup[x+4] * DOOMGENERIC_RESX + srcX];
-					byte idx5 = srcBuf[yLookup[x+5] * DOOMGENERIC_RESX + srcX];
-					byte idx6 = srcBuf[yLookup[x+6] * DOOMGENERIC_RESX + srcX];
-					byte idx7 = srcBuf[yLookup[x+7] * DOOMGENERIC_RESX + srcX];
-					
-					// Write 4 pairs of pixels using 32-bit writes
-					dst32[0] = palette[idx0] | ((uint32_t)palette[idx1] << 16);
-					dst32[1] = palette[idx2] | ((uint32_t)palette[idx3] << 16);
-					dst32[2] = palette[idx4] | ((uint32_t)palette[idx5] << 16);
-					dst32[3] = palette[idx6] | ((uint32_t)palette[idx7] << 16);
-					dst32 += 4;
+				for (; x + 3 < aspectOutW; x += 4) {
+					dst[x]   = palette[srcBuf[yLookup[x]   * DOOMGENERIC_RESX + srcX]];
+					dst[x+1] = palette[srcBuf[yLookup[x+1] * DOOMGENERIC_RESX + srcX]];
+					dst[x+2] = palette[srcBuf[yLookup[x+2] * DOOMGENERIC_RESX + srcX]];
+					dst[x+3] = palette[srcBuf[yLookup[x+3] * DOOMGENERIC_RESX + srcX]];
 				}
 				// Handle remaining pixels
-				dst = (uint16_t *)dst32;
 				for (; x < aspectOutW; x++) {
-					byte idx = srcBuf[yLookup[x] * DOOMGENERIC_RESX + srcX];
-					*dst++ = palette[idx];
+					dst[x] = palette[srcBuf[yLookup[x] * DOOMGENERIC_RESX + srcX]];
 				}
 			}
 		} else {
@@ -819,47 +806,29 @@ void DG_DrawFrame() {
 				unsigned int srcX = srcXLookup[y];
 				const unsigned int *yLookup = srcYLookup;
 				
-				// Prefetch next row's lookup value
-				__builtin_prefetch(&srcXLookup[y + 1], 0, 3);
-				
-				// Process 8 pixels at a time using 32-bit writes (2 pixels per write)
+				// Process 4 pixels at a time with direct palette lookup
 				unsigned int x = 0;
-				uint32_t *dst32 = (uint32_t *)dst;
-				for (; x + 7 < scaledOutW; x += 8) {
-					// Prefetch source data for next batch (only if within bounds)
-					if (x + 16 < scaledOutW) {
-						__builtin_prefetch(&srcBuf[yLookup[x+16] * DOOMGENERIC_RESX + srcX], 0, 0);
-					}
-					
-					// Load 8 palette indices
-					byte idx0 = srcBuf[yLookup[x]   * DOOMGENERIC_RESX + srcX];
-					byte idx1 = srcBuf[yLookup[x+1] * DOOMGENERIC_RESX + srcX];
-					byte idx2 = srcBuf[yLookup[x+2] * DOOMGENERIC_RESX + srcX];
-					byte idx3 = srcBuf[yLookup[x+3] * DOOMGENERIC_RESX + srcX];
-					byte idx4 = srcBuf[yLookup[x+4] * DOOMGENERIC_RESX + srcX];
-					byte idx5 = srcBuf[yLookup[x+5] * DOOMGENERIC_RESX + srcX];
-					byte idx6 = srcBuf[yLookup[x+6] * DOOMGENERIC_RESX + srcX];
-					byte idx7 = srcBuf[yLookup[x+7] * DOOMGENERIC_RESX + srcX];
-					
-					// Write 4 pairs of pixels using 32-bit writes
-					dst32[0] = palette[idx0] | ((uint32_t)palette[idx1] << 16);
-					dst32[1] = palette[idx2] | ((uint32_t)palette[idx3] << 16);
-					dst32[2] = palette[idx4] | ((uint32_t)palette[idx5] << 16);
-					dst32[3] = palette[idx6] | ((uint32_t)palette[idx7] << 16);
-					dst32 += 4;
+				for (; x + 3 < scaledOutW; x += 4) {
+					dst[x]   = palette[srcBuf[yLookup[x]   * DOOMGENERIC_RESX + srcX]];
+					dst[x+1] = palette[srcBuf[yLookup[x+1] * DOOMGENERIC_RESX + srcX]];
+					dst[x+2] = palette[srcBuf[yLookup[x+2] * DOOMGENERIC_RESX + srcX]];
+					dst[x+3] = palette[srcBuf[yLookup[x+3] * DOOMGENERIC_RESX + srcX]];
 				}
 				// Handle remaining pixels
-				dst = (uint16_t *)dst32;
 				for (; x < scaledOutW; x++) {
-					byte idx = srcBuf[yLookup[x] * DOOMGENERIC_RESX + srcX];
-					*dst++ = palette[idx];
+					dst[x] = palette[srcBuf[yLookup[x] * DOOMGENERIC_RESX + srcX]];
 				}
 			}
 		}
 		
-		// Write frame to display
+		// Write frame to display (measure time)
+		uint32_t writeStart = DG_GetTicksMs();
 		lseek(fbFd, 0, SEEK_SET);
 		write(fbFd, renderBuffer, renderBufferSize);
+		if (useVsync) {
+			fsync(fbFd);  // Wait for SPI transfer (~95ms, ~10 FPS but no tearing)
+		}
+		totalWriteTimeMs += DG_GetTicksMs() - writeStart;
 	} else {
 		// Original 32-bit mmap path
 		for (int line = 0; line < DOOMGENERIC_RESY; line++) {
@@ -869,6 +838,20 @@ void DG_DrawFrame() {
 				(fbBytesPerPixel * DOOMGENERIC_RESX)
 			);
 		}
+	}
+
+	// FPS tracking - update counter and print every second
+	frameCount++;
+	uint32_t now = DG_GetTicksMs();
+	if (now - lastFpsTime >= FPS_UPDATE_INTERVAL_MS) {
+		currentFps = (frameCount * 1000) / (now - lastFpsTime);
+		avgWriteTimeMs = frameCount > 0 ? totalWriteTimeMs / frameCount : 0;
+		uint32_t displayFps = avgWriteTimeMs > 0 ? 1000 / avgWriteTimeMs : 0;
+		fprintf(stderr, "FPS: %u | write: %ums | display: ~%u fps\n", 
+			currentFps, avgWriteTimeMs, displayFps);
+		frameCount = 0;
+		totalWriteTimeMs = 0;
+		lastFpsTime = now;
 	}
 
 	checkKeys();

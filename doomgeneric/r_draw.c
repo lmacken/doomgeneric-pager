@@ -99,20 +99,12 @@ int			dccount;
 // Thus a special case loop for very fast rendering can
 //  be used. It has also been used with Wolfenstein 3D.
 // 
-// OPTIMIZED: 8x loop unrolling with precomputed step values
-// Reduces loop overhead and improves instruction scheduling on MIPS 24KEc
-// Uses precalculated fracstep multiples to avoid multiplications in hot loop
-//
 void R_DrawColumn (void) 
 { 
     int			count; 
     byte*		dest; 
     fixed_t		frac;
-    fixed_t		fracstep;
-    fixed_t		fracstep2, fracstep3, fracstep4;
-    // Cache globals in local registers for faster access
-    byte*		colormap;
-    byte*		source;
+    fixed_t		fracstep;	 
  
     count = dc_yh - dc_yl; 
 
@@ -127,10 +119,6 @@ void R_DrawColumn (void)
 	I_Error ("R_DrawColumn: %i to %i at %i", dc_yl, dc_yh, dc_x); 
 #endif 
 
-    // Cache pointers locally to avoid repeated global loads
-    colormap = dc_colormap;
-    source = dc_source;
-
     // Framebuffer destination address.
     // Use ylookup LUT to avoid multiply with ScreenWidth.
     // Use columnofs LUT for subwindows? 
@@ -141,57 +129,19 @@ void R_DrawColumn (void)
     fracstep = dc_iscale; 
     frac = dc_texturemid + (dc_yl-centery)*fracstep; 
 
-    // Precompute step multiples to avoid multiplies in inner loop
-    fracstep2 = fracstep + fracstep;
-    fracstep3 = fracstep2 + fracstep;
-    fracstep4 = fracstep3 + fracstep;
-
-    // OPTIMIZED: 8x unrolled loop for better instruction scheduling
-    // Process 8 pixels per iteration when possible
-    while (count >= 8)
+    // Inner loop that does the actual texture mapping,
+    //  e.g. a DDA-lile scaling.
+    // This is as fast as it gets.
+    do 
     {
-	// Prefetch upcoming texture data (16 pixels ahead)
-	__builtin_prefetch(&source[((frac+(fracstep4<<2))>>FRACBITS)&127], 0, 0);
+	// Re-map color indices from wall texture column
+	//  using a lighting/special effects LUT.
+	*dest = dc_colormap[dc_source[(frac>>FRACBITS)&127]];
 	
-	// First 4 pixels
-	dest[0]             = colormap[source[(frac>>FRACBITS)&127]];
-	dest[SCREENWIDTH]   = colormap[source[((frac+fracstep)>>FRACBITS)&127]];
-	dest[SCREENWIDTH*2] = colormap[source[((frac+fracstep2)>>FRACBITS)&127]];
-	dest[SCREENWIDTH*3] = colormap[source[((frac+fracstep3)>>FRACBITS)&127]];
-	
-	frac += fracstep4;
-	
-	// Second 4 pixels
-	dest[SCREENWIDTH*4] = colormap[source[(frac>>FRACBITS)&127]];
-	dest[SCREENWIDTH*5] = colormap[source[((frac+fracstep)>>FRACBITS)&127]];
-	dest[SCREENWIDTH*6] = colormap[source[((frac+fracstep2)>>FRACBITS)&127]];
-	dest[SCREENWIDTH*7] = colormap[source[((frac+fracstep3)>>FRACBITS)&127]];
-	
-	frac += fracstep4;
-	dest += SCREENWIDTH*8;
-	count -= 8;
-    }
-
-    // Handle 4 remaining pixels if present
-    if (count >= 4)
-    {
-	dest[0]             = colormap[source[(frac>>FRACBITS)&127]];
-	dest[SCREENWIDTH]   = colormap[source[((frac+fracstep)>>FRACBITS)&127]];
-	dest[SCREENWIDTH*2] = colormap[source[((frac+fracstep2)>>FRACBITS)&127]];
-	dest[SCREENWIDTH*3] = colormap[source[((frac+fracstep3)>>FRACBITS)&127]];
-	
-	dest += SCREENWIDTH*4;
-	frac += fracstep4;
-	count -= 4;
-    }
-
-    // Handle remaining pixels (0-3)
-    while (count-- >= 0)
-    {
-	*dest = colormap[source[(frac>>FRACBITS)&127]];
 	dest += SCREENWIDTH; 
 	frac += fracstep;
-    }
+	
+    } while (count--); 
 } 
 
 
@@ -636,21 +586,14 @@ int			dscount;
 
 
 //
-// Draws the actual span (horizontal floor/ceiling).
-// OPTIMIZED: 8x loop unrolling with cached local pointers and precomputed steps
-// Reduces loop overhead for floor/ceiling rendering on MIPS 24KEc
-//
+// Draws the actual span.
 void R_DrawSpan (void) 
 { 
     unsigned int position, step;
-    unsigned int step2, step4;
     byte *dest;
     int count;
     int spot;
     unsigned int xtemp, ytemp;
-    // Cache globals in local registers
-    byte *colormap;
-    byte *source;
 
 #ifdef RANGECHECK
     if (ds_x2 < ds_x1
@@ -664,10 +607,6 @@ void R_DrawSpan (void)
 //	dscount++;
 #endif
 
-    // Cache pointers locally for faster access
-    colormap = ds_colormap;
-    source = ds_source;
-
     // Pack position and step variables into a single 32-bit integer,
     // with x in the top 16 bits and y in the bottom 16 bits.  For
     // each 16-bit part, the top 6 bits are the integer part and the
@@ -678,106 +617,25 @@ void R_DrawSpan (void)
     step = ((ds_xstep << 10) & 0xffff0000)
          | ((ds_ystep >> 6)  & 0x0000ffff);
 
-    // Precompute step multiples
-    step2 = step + step;
-    step4 = step2 + step2;
-
     dest = ylookup[ds_y] + columnofs[ds_x1];
 
     // We do not check for zero spans here?
     count = ds_x2 - ds_x1;
 
-    // OPTIMIZED: 8x unrolled loop for better instruction scheduling
-    while (count >= 8)
+    do
     {
-	// Prefetch ahead for upcoming texture lookups (16 pixels ahead)
-	{
-	    unsigned int prefetch_pos = position + (step4 << 2);
-	    __builtin_prefetch(&source[((prefetch_pos >> 4) & 0x0fc0) | (prefetch_pos >> 26)], 0, 0);
-	}
-
-	// Pixels 0-3
-        ytemp = (position >> 4) & 0x0fc0;
-        xtemp = (position >> 26);
-	dest[0] = colormap[source[xtemp | ytemp]];
-        position += step;
-
-        ytemp = (position >> 4) & 0x0fc0;
-        xtemp = (position >> 26);
-	dest[1] = colormap[source[xtemp | ytemp]];
-        position += step;
-
-        ytemp = (position >> 4) & 0x0fc0;
-        xtemp = (position >> 26);
-	dest[2] = colormap[source[xtemp | ytemp]];
-        position += step;
-
-        ytemp = (position >> 4) & 0x0fc0;
-        xtemp = (position >> 26);
-	dest[3] = colormap[source[xtemp | ytemp]];
-        position += step;
-
-	// Pixels 4-7
-        ytemp = (position >> 4) & 0x0fc0;
-        xtemp = (position >> 26);
-	dest[4] = colormap[source[xtemp | ytemp]];
-        position += step;
-
-        ytemp = (position >> 4) & 0x0fc0;
-        xtemp = (position >> 26);
-	dest[5] = colormap[source[xtemp | ytemp]];
-        position += step;
-
-        ytemp = (position >> 4) & 0x0fc0;
-        xtemp = (position >> 26);
-	dest[6] = colormap[source[xtemp | ytemp]];
-        position += step;
-
-        ytemp = (position >> 4) & 0x0fc0;
-        xtemp = (position >> 26);
-	dest[7] = colormap[source[xtemp | ytemp]];
-        position += step;
-
-	dest += 8;
-	count -= 8;
-    }
-
-    // Handle 4 remaining pixels if present
-    if (count >= 4)
-    {
-        ytemp = (position >> 4) & 0x0fc0;
-        xtemp = (position >> 26);
-	dest[0] = colormap[source[xtemp | ytemp]];
-        position += step;
-
-        ytemp = (position >> 4) & 0x0fc0;
-        xtemp = (position >> 26);
-	dest[1] = colormap[source[xtemp | ytemp]];
-        position += step;
-
-        ytemp = (position >> 4) & 0x0fc0;
-        xtemp = (position >> 26);
-	dest[2] = colormap[source[xtemp | ytemp]];
-        position += step;
-
-        ytemp = (position >> 4) & 0x0fc0;
-        xtemp = (position >> 26);
-	dest[3] = colormap[source[xtemp | ytemp]];
-        position += step;
-
-	dest += 4;
-	count -= 4;
-    }
-
-    // Handle remaining pixels (0-3)
-    while (count-- >= 0)
-    {
+	// Calculate current texture index in u,v.
         ytemp = (position >> 4) & 0x0fc0;
         xtemp = (position >> 26);
         spot = xtemp | ytemp;
-	*dest++ = colormap[source[spot]];
+
+	// Lookup pixel from flat texture tile,
+	//  re-index using light/colormap.
+	*dest++ = ds_colormap[ds_source[spot]];
+
         position += step;
-    }
+
+    } while (count--);
 }
 
 
