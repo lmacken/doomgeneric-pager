@@ -96,13 +96,14 @@ static inline void *aligned_alloc_cached(size_t size) {
 // timing stuff
 static struct timeval startTime;
 
-// FPS and timing tracking
+// FPS and timing tracking (writes to file, not stderr - stderr crashes SIGIL!)
 static uint32_t frameCount = 0;
 static uint32_t lastFpsTime = 0;
 static uint32_t currentFps = 0;
 static uint32_t totalWriteTimeMs = 0;  // Accumulated write() time
 static uint32_t avgWriteTimeMs = 0;    // Average write time per frame
 static int useVsync = 0;               // If 1, fsync after write (no tearing but ~10 FPS)
+static int fpsFd = -1;                 // File descriptor for FPS logging
 #define FPS_UPDATE_INTERVAL_MS 1000  // Update FPS every second
 
 // framebuffer stuff 
@@ -840,15 +841,23 @@ void DG_DrawFrame() {
 		}
 	}
 
-	// FPS tracking - update counter and print every second
+	// FPS tracking - write to file (stderr causes SIGIL to crash!)
 	frameCount++;
 	uint32_t now = DG_GetTicksMs();
 	if (now - lastFpsTime >= FPS_UPDATE_INTERVAL_MS) {
 		currentFps = (frameCount * 1000) / (now - lastFpsTime);
 		avgWriteTimeMs = frameCount > 0 ? totalWriteTimeMs / frameCount : 0;
 		uint32_t displayFps = avgWriteTimeMs > 0 ? 1000 / avgWriteTimeMs : 0;
-		fprintf(stderr, "FPS: %u | write: %ums | display: ~%u fps\n", 
-			currentFps, avgWriteTimeMs, displayFps);
+		// Write to file instead of stderr - stderr causes crashes on intensive maps
+		if (fpsFd < 0) {
+			fpsFd = open("/tmp/fps.log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+		}
+		if (fpsFd >= 0) {
+			char buf[64];
+			int len = snprintf(buf, sizeof(buf), "FPS: %u | write: %ums | display: ~%u fps\n", 
+				currentFps, avgWriteTimeMs, displayFps);
+			write(fpsFd, buf, len);
+		}
 		frameCount = 0;
 		totalWriteTimeMs = 0;
 		lastFpsTime = now;
