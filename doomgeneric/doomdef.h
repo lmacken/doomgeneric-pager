@@ -39,7 +39,8 @@
 
 // If rangecheck is undefined,
 // most parameter validation debugging code will not be compiled
-#define RANGECHECK
+// Disabled for BFG Edition compatibility (560px wide title screens)
+// #define RANGECHECK
 
 // The maximum number of players, multiplayer/networking.
 #define MAXPLAYERS 4

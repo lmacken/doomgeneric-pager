@@ -9,5 +9,7 @@
 Debug/
 Release/
 Build/
-doomgeneric
+# Binary output (not the source directory)
+/doomgeneric/doomgeneric
 doomgeneric.map
+*.wad

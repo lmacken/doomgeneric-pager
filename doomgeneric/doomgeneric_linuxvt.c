@@ -6,6 +6,8 @@
 #include "m_argv.h"
 #include "doomgeneric.h"
 #include "i_system.h"
+#include "doomdef.h"   // For GS_LEVEL constant
+#include "doomstat.h"  // For gamestate variable
 
 // XXX: HACK
 // Linux's input-event-codes.h and doomkeys.h have many collisions.
@@ -46,6 +48,7 @@
 
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
@@ -58,6 +61,9 @@
 #include <linux/input.h>
 #include <linux/input-event-codes.h>
 #include <linux/fb.h>
+#include <linux/kd.h>
+#include <linux/vt.h>
+#include <signal.h>
 
 #include <stdbool.h>
 
@@ -74,8 +80,45 @@ static struct timeval startTime;
 
 // framebuffer stuff 
 static uint8_t *fbPtr;
-static int fbFd;
-static unsigned int fbWidth, fbHeight, fbStride, fbBytesPerPixel, fbOffsetX, fbOffsetY;
+// These are non-static so net_lobby.c can access them for lobby drawing
+uint16_t *renderBuffer = NULL;  // Local render buffer for 16-bit mode
+size_t renderBufferSize = 0;
+int fbFd;
+static int ttyFd = -1;  // TTY for graphics mode switching
+unsigned int fbWidth, fbHeight;  // Non-static for net_lobby.c access
+static unsigned int fbStride, fbBytesPerPixel, fbOffsetX, fbOffsetY;
+static int fbIs16Bit = 0; // 1 if framebuffer is 16-bit RGB565
+
+// Precomputed lookup tables for scaling (avoids per-pixel division)
+// Full-screen stretched (for gameplay with FOV correction)
+static unsigned int *srcXLookup = NULL;  // For each dest Y, source X
+static unsigned int *srcYLookup = NULL;  // For each dest X, source Y
+static unsigned int scaledOutW = 0;
+static unsigned int scaledOutH = 0;
+static unsigned int scaledOffY = 0;
+
+// Aspect-correct (for title screens/menus - uses black bars)
+static unsigned int *srcXLookupAspect = NULL;
+static unsigned int *srcYLookupAspect = NULL;
+static unsigned int aspectOutW = 0;
+static unsigned int aspectOutH = 0;
+static unsigned int aspectOffY = 0;  // Vertical offset for centering (in display rows)
+
+// Cleanup function for signal handling
+static void cleanup_and_exit(int sig) {
+	// Restore text mode if we switched to graphics mode
+	if (ttyFd >= 0) {
+		ioctl(ttyFd, KDSETMODE, KD_TEXT);
+		close(ttyFd);
+	}
+	if (renderBuffer) free(renderBuffer);
+	if (srcXLookup) free(srcXLookup);
+	if (srcYLookup) free(srcYLookup);
+	if (srcXLookupAspect) free(srcXLookupAspect);
+	if (srcYLookupAspect) free(srcYLookupAspect);
+	if (fbFd >= 0) close(fbFd);
+	_exit(sig ? 128 + sig : 0);
+}
 
 // input stuff
 static int numInputFds = 0;
@@ -86,6 +129,16 @@ static struct pollfd pollfds[MAX_INPUT_DEVS];
 static unsigned short s_KeyQueue[KEYQUEUE_SIZE];
 static unsigned int s_KeyQueueWriteIndex = 0;
 static unsigned int s_KeyQueueReadIndex = 0;
+
+// Track button states for combo detection
+static int redButtonPressed = 0;   // BTN_SOUTH (0x130)
+static int greenButtonPressed = 0; // BTN_EAST (0x131)
+
+// Track D-pad states for green+direction combos
+static int dpadUpPressed = 0;
+static int dpadDownPressed = 0;
+static int dpadLeftPressed = 0;
+static int dpadRightPressed = 0;
 
 // XXX: HACK
 // Linux's evdev system doesn't make it feasible to just use
@@ -197,6 +250,14 @@ static unsigned char convertToDoomKey(unsigned int key){
 			key = DOOM_KEY_TAB;
 			break;
 
+		// WiFi Pineapple Pager button mappings
+		case 0x130:  // BTN_SOUTH (304) - red button
+			key = KEY_FIRE;
+			break;
+		case 0x131:  // BTN_EAST (305) - green button
+			key = DOOM_KEY_ENTER;
+			break;
+
 		// sadly, yes, we need to handle every single alphanumeric
 		// key here, since evdev doesn't spit out keys in anything
 		// remotely resembling ASCII.....
@@ -273,11 +334,73 @@ static unsigned char convertToDoomKey(unsigned int key){
 	return key;
 }
 
-static void addKeyToQueue(int pressed, unsigned char keyCode) {
+static void addKeyToQueue(int pressed, unsigned int keyCode) {
 	if ((keyCode == KEY_LEFTSHIFT || keyCode == KEY_RIGHTSHIFT) &&
 		(pressed == 1 || pressed == 0))
 		shiftPressed = pressed;
 
+	// Track button states for combo detection
+	if (keyCode == 0x130) {  // Red button
+		redButtonPressed = pressed;
+	} else if (keyCode == 0x131) {  // Green button
+		greenButtonPressed = pressed;
+	}
+	
+	// Track D-pad states
+	if (keyCode == KEY_UP) dpadUpPressed = pressed;
+	else if (keyCode == KEY_DOWN) dpadDownPressed = pressed;
+	else if (keyCode == KEY_LEFT) dpadLeftPressed = pressed;
+	else if (keyCode == KEY_RIGHT) dpadRightPressed = pressed;
+	
+	// Both buttons pressed together = ESC (main menu)
+	if (redButtonPressed && greenButtonPressed && pressed) {
+		unsigned short escData = (1 << 8) | KEY_ESCAPE;
+		s_KeyQueue[s_KeyQueueWriteIndex] = escData;
+		s_KeyQueueWriteIndex++;
+		s_KeyQueueWriteIndex %= KEYQUEUE_SIZE;
+		return;  // Don't also send the individual button
+	}
+	
+	// Green + D-pad combos (when green is held)
+	if (greenButtonPressed && pressed) {
+		unsigned char comboKey = 0;
+		
+		if (keyCode == KEY_UP) {
+			comboKey = KEY_USE;  // Open doors/switches (0xa2)
+		} else if (keyCode == KEY_DOWN) {
+			comboKey = DOOM_KEY_TAB;  // Automap toggle
+		} else if (keyCode == KEY_LEFT) {
+			comboKey = KEY_STRAFE_L;  // Strafe left (0xa0)
+		} else if (keyCode == KEY_RIGHT) {
+			comboKey = KEY_STRAFE_R;  // Strafe right (0xa1)
+		}
+		
+		if (comboKey != 0) {
+			unsigned short comboData = (1 << 8) | comboKey;
+			s_KeyQueue[s_KeyQueueWriteIndex] = comboData;
+			s_KeyQueueWriteIndex++;
+			s_KeyQueueWriteIndex %= KEYQUEUE_SIZE;
+			return;  // Don't send the regular D-pad key
+		}
+	}
+	
+	// Handle key release for combo keys (need to release the combo key too)
+	if (greenButtonPressed && !pressed) {
+		unsigned char comboKey = 0;
+		
+		if (keyCode == KEY_UP) comboKey = KEY_USE;
+		else if (keyCode == KEY_DOWN) comboKey = DOOM_KEY_TAB;
+		else if (keyCode == KEY_LEFT) comboKey = KEY_STRAFE_L;
+		else if (keyCode == KEY_RIGHT) comboKey = KEY_STRAFE_R;
+		
+		if (comboKey != 0) {
+			unsigned short comboData = (0 << 8) | comboKey;  // Release
+			s_KeyQueue[s_KeyQueueWriteIndex] = comboData;
+			s_KeyQueueWriteIndex++;
+			s_KeyQueueWriteIndex %= KEYQUEUE_SIZE;
+			return;
+		}
+	}
 		
 	unsigned char key = convertToDoomKey(keyCode);
 	if (key == 0xFF) // unknown, don't process it
@@ -323,6 +446,32 @@ static void checkKeys() {
 	return;
 }
 
+// Check for lobby-specific input: returns 1=start, -1=quit, 0=nothing
+// Pager buttons: 0x131 (305) = GREEN button, 0x130 (304) = RED button
+int DG_CheckLobbyInput(void)
+{
+	int ret, i;
+	struct input_event ev;
+	int result = 0;
+	
+	ret = poll(pollfds, numInputFds, 0);
+	if (ret <= 0) return 0;
+	
+	for (i = 0; i < MAX_INPUT_DEVS; i++) {
+		if (pollfds[i].revents & POLLIN) {
+			read(inputFds[i], &ev, sizeof(ev));
+			if (ev.type == EV_KEY && ev.value == 1) {  // Key press
+				// Use exact codes: 0x131 = GREEN, 0x130 = RED
+				if (ev.code == 0x131 || ev.code == KEY_SPACE || ev.code == KEY_ENTER) {
+					result = 1;  // GREEN = Start game
+				} else if (ev.code == 0x130 || ev.code == KEY_ESC) {
+					result = -1; // RED = Quit
+				}
+			}
+		}
+	}
+	return result;
+}
 
 #define TEST_KEY(k) (keybits[(k)/8] & (1 << ((k)%8)))
 static int isKeyboard(const char *devPath) {
@@ -353,9 +502,16 @@ static int isKeyboard(const char *devPath) {
 		return 0;
 	}
 
+	/* Accept full keyboards OR any device with button keys (for GPIO buttons) */
 	if (TEST_KEY(KEY_A) && TEST_KEY(KEY_ENTER)) {
 		close(fd);
 		return 1;  /* looks like a keyboard */
+	}
+	
+	/* Also accept devices with BTN_SOUTH/BTN_EAST (Pineapple Pager buttons) */
+	if (TEST_KEY(0x130) || TEST_KEY(0x131)) {
+		close(fd);
+		return 1;  /* has GPIO buttons */
 	}
 
 	close(fd);
@@ -409,6 +565,30 @@ void DG_Init() {
 	struct fb_var_screeninfo info;
 	struct fb_fix_screeninfo finfo;
 
+	// Set up signal handlers for clean exit
+	signal(SIGINT, cleanup_and_exit);
+	signal(SIGTERM, cleanup_and_exit);
+	signal(SIGSEGV, cleanup_and_exit);
+
+	//
+	// Try to get exclusive graphics mode access
+	// This prevents the console/other apps from interfering
+	//
+	ttyFd = open("/dev/tty0", O_RDWR);
+	if (ttyFd < 0)
+		ttyFd = open("/dev/tty", O_RDWR);
+	if (ttyFd < 0)
+		ttyFd = open("/dev/console", O_RDWR);
+	
+	if (ttyFd >= 0) {
+		// Switch to graphics mode - prevents console from drawing
+		if (ioctl(ttyFd, KDSETMODE, KD_GRAPHICS) == 0) {
+			printf("Switched to graphics mode\n");
+		} else {
+			printf("Warning: Could not switch to graphics mode\n");
+		}
+	}
+
 	//
 	// set up the framebuffer
 	//
@@ -434,19 +614,96 @@ void DG_Init() {
 	fbWidth = info.xres;
 	fbHeight = info.yres;
 	fbBytesPerPixel = info.bits_per_pixel / 8;
+	
+	// Detect 16-bit RGB565 framebuffer
+	if (info.bits_per_pixel == 16) {
+		fbIs16Bit = 1;
+		printf("Framebuffer: %dx%d, 16-bit RGB565\n", fbWidth, fbHeight);
+		
+		// Use write() for SPI displays - mmap causes glitches with fbtft
+		renderBufferSize = fbWidth * fbHeight * sizeof(uint16_t);
+		renderBuffer = (uint16_t *)malloc(renderBufferSize);
+		if (!renderBuffer)
+			I_Error("Failed to allocate render buffer");
+		memset(renderBuffer, 0, renderBufferSize);
+		
+		// Clear the display
+		lseek(fbFd, 0, SEEK_SET);
+		write(fbFd, renderBuffer, renderBufferSize);
+		
+		fbPtr = NULL;
+		fbOffsetX = 0;
+		fbOffsetY = 0;
+		
+		// Fill entire 222x480 display with 320x200 Doom + 90° CCW rotation
+		// After rotation: Doom width (320) -> display height (480), Doom height (200) -> display width (222)
+		// Scale factors: 480/320 = 1.5 for height, 222/200 = 1.11 for width
+		scaledOutW = fbWidth;   // 222 (fills display width)
+		scaledOutH = fbHeight;  // 480 (fills display height)
+		scaledOffY = 0;  // No offset, fills entire screen
+		
+		// Precompute lookup tables for STRETCHED scaling + rotation (gameplay)
+		srcXLookup = (unsigned int *)malloc(scaledOutH * sizeof(unsigned int));
+		srcYLookup = (unsigned int *)malloc(scaledOutW * sizeof(unsigned int));
+		
+		// For each display row (y), compute which Doom column (X) to sample
+		// Display Y maps to Doom X: srcX = y * DoomWidth / displayHeight
+		for (unsigned int y = 0; y < scaledOutH; y++) {
+			srcXLookup[y] = (y * DOOMGENERIC_RESX) / scaledOutH;
+			if (srcXLookup[y] >= DOOMGENERIC_RESX) srcXLookup[y] = DOOMGENERIC_RESX - 1;
+		}
+		// For each display col (x), compute which Doom row (Y) to sample (flipped for CCW)
+		// Display X maps to Doom Y (inverted): srcY = (width-1-x) * DoomHeight / displayWidth
+		for (unsigned int x = 0; x < scaledOutW; x++) {
+			srcYLookup[x] = ((scaledOutW - 1 - x) * DOOMGENERIC_RESY) / scaledOutW;
+			if (srcYLookup[x] >= DOOMGENERIC_RESY) srcYLookup[x] = DOOMGENERIC_RESY - 1;
+		}
+		
+		printf("Full-screen: Doom %dx%d -> Display %dx%d (scaled + rotated)\n", 
+		       DOOMGENERIC_RESX, DOOMGENERIC_RESY, fbWidth, fbHeight);
+		
+		// Precompute lookup tables for ASPECT-CORRECT scaling (title screens)
+		// Display: 222 wide x 480 tall. After 90° CCW rotation from Doom's POV: 480 wide x 222 tall
+		// Doom is 320x200 (1.6:1 aspect). To maintain aspect with 222 vertical pixels:
+		// Scaled width = 222 * (320/200) = 222 * 1.6 = 355 display rows
+		// Black bars: (480 - 355) / 2 = 62 pixels on each side
+		aspectOutW = fbWidth;  // 222 - use full display columns (becomes Doom's vertical)
+		aspectOutH = (aspectOutW * DOOMGENERIC_RESX) / DOOMGENERIC_RESY;  // 222 * 320 / 200 = 355
+		if (aspectOutH > fbHeight) aspectOutH = fbHeight;
+		aspectOffY = (fbHeight - aspectOutH) / 2;  // Center vertically: (480 - 355) / 2 = 62
+		
+		srcXLookupAspect = (unsigned int *)malloc(aspectOutH * sizeof(unsigned int));
+		srcYLookupAspect = (unsigned int *)malloc(aspectOutW * sizeof(unsigned int));
+		
+		// For each output row in the aspect-correct region, which Doom X to sample
+		for (unsigned int y = 0; y < aspectOutH; y++) {
+			srcXLookupAspect[y] = (y * DOOMGENERIC_RESX) / aspectOutH;
+			if (srcXLookupAspect[y] >= DOOMGENERIC_RESX) srcXLookupAspect[y] = DOOMGENERIC_RESX - 1;
+		}
+		// For each output column, which Doom Y to sample (inverted for CCW rotation)
+		for (unsigned int x = 0; x < aspectOutW; x++) {
+			srcYLookupAspect[x] = ((aspectOutW - 1 - x) * DOOMGENERIC_RESY) / aspectOutW;
+			if (srcYLookupAspect[x] >= DOOMGENERIC_RESY) srcYLookupAspect[x] = DOOMGENERIC_RESY - 1;
+		}
+		
+		printf("Aspect-correct: Doom %dx%d -> %dx%d rows + %d row offset (for menus)\n",
+		       DOOMGENERIC_RESX, DOOMGENERIC_RESY, aspectOutW, aspectOutH, aspectOffY);
+	} else {
+		printf("Framebuffer: %dx%d, %d-bit\n", fbWidth, fbHeight, info.bits_per_pixel);
+		
+		// For 32-bit displays, use mmap as normal
+		fbOffsetX = ((fbWidth - DOOMGENERIC_RESX) / 2) * fbBytesPerPixel;
+		fbOffsetY = ((fbHeight - DOOMGENERIC_RESY) / 2) * fbStride;
 
-	// to center the image on screen
-	fbOffsetX = ((fbWidth - DOOMGENERIC_RESX) / 2) * fbBytesPerPixel;
-	fbOffsetY = ((fbHeight - DOOMGENERIC_RESY) / 2) * fbStride;
+		fbPtr = mmap(NULL, fbStride * fbHeight, PROT_READ | PROT_WRITE,
+				MAP_SHARED, fbFd, 0);
 
-	fbPtr = mmap(NULL, fbStride * fbHeight, PROT_READ | PROT_WRITE,
-			MAP_SHARED, fbFd, 0);
+		if (!fbPtr)
+			I_Error("Failed to mmap /dev/fb0: %s", strerror(errno));
 
-	if (!fbPtr)
-		I_Error("Failed to mmap /dev/fb0: %s", strerror(errno));
-
-	// clear the screen
-	memset(fbPtr, 0, fbStride * fbHeight);
+		// clear the screen
+		memset(fbPtr, 0, fbStride * fbHeight);
+	}
 
 	//
 	// set up input
@@ -460,16 +717,91 @@ void DG_Init() {
 	gettimeofday(&startTime, NULL);
 }
 
+// Convert 32-bit ARGB to 16-bit RGB565
+static inline uint16_t rgb32_to_rgb565(uint32_t pixel) {
+	uint8_t r = (pixel >> 16) & 0xFF;
+	uint8_t g = (pixel >> 8) & 0xFF;
+	uint8_t b = pixel & 0xFF;
+	return ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
+}
+
+// Inline RGB8888 to RGB565 conversion
+#define RGB888_TO_RGB565(p) (((p >> 8) & 0xF800) | ((p >> 5) & 0x07E0) | ((p >> 3) & 0x001F))
+
 void DG_DrawFrame() {
-	// we need to do it line-by-line like this to account for the
-	// fact that the system framebuffer resolution is very likely
-	// larger than the doomgeneric render resolution.
-	for (int line = 0; line < DOOMGENERIC_RESY; line++) {
-		memcpy(
-			(void *)((uintptr_t)(fbPtr) + (fbStride * line) + fbOffsetY + fbOffsetX),
+	if (fbIs16Bit) {
+		// Optimized 16-bit RGB565 with 90° CCW rotation
+		// Uses precomputed lookup tables to avoid per-pixel division
+		uint32_t *srcBuf = (uint32_t *)DG_ScreenBuffer;
+		
+		// Use aspect-correct rendering for title/menu screens, stretched for gameplay
+		int useAspectCorrect = (gamestate != GS_LEVEL);
+		
+		if (useAspectCorrect && srcXLookupAspect && srcYLookupAspect) {
+			// Clear buffer first (for black bars at top/bottom)
+			memset(renderBuffer, 0, renderBufferSize);
+			
+			// Render with correct aspect ratio (centered with vertical black bars)
+			for (unsigned int y = 0; y < aspectOutH; y++) {
+				uint16_t *dst = renderBuffer + (y + aspectOffY) * fbWidth;
+				uint32_t *srcRow = srcBuf + srcXLookupAspect[y];
+				
+				// Process 4 pixels at a time when possible
+				unsigned int x = 0;
+				for (; x + 3 < aspectOutW; x += 4) {
+					uint32_t p0 = srcRow[srcYLookupAspect[x] * DOOMGENERIC_RESX];
+					uint32_t p1 = srcRow[srcYLookupAspect[x+1] * DOOMGENERIC_RESX];
+					uint32_t p2 = srcRow[srcYLookupAspect[x+2] * DOOMGENERIC_RESX];
+					uint32_t p3 = srcRow[srcYLookupAspect[x+3] * DOOMGENERIC_RESX];
+					dst[x]   = RGB888_TO_RGB565(p0);
+					dst[x+1] = RGB888_TO_RGB565(p1);
+					dst[x+2] = RGB888_TO_RGB565(p2);
+					dst[x+3] = RGB888_TO_RGB565(p3);
+				}
+				// Handle remaining pixels
+				for (; x < aspectOutW; x++) {
+					uint32_t pixel = srcRow[srcYLookupAspect[x] * DOOMGENERIC_RESX];
+					dst[x] = RGB888_TO_RGB565(pixel);
+				}
+			}
+		} else {
+			// Full-screen stretched rendering (gameplay with FOV correction)
+			for (unsigned int y = 0; y < scaledOutH; y++) {
+				uint16_t *dst = renderBuffer + (y + scaledOffY) * fbWidth;
+				uint32_t *srcRow = srcBuf + srcXLookup[y];
+				
+				// Process 4 pixels at a time when possible
+				unsigned int x = 0;
+				for (; x + 3 < scaledOutW; x += 4) {
+					uint32_t p0 = srcRow[srcYLookup[x] * DOOMGENERIC_RESX];
+					uint32_t p1 = srcRow[srcYLookup[x+1] * DOOMGENERIC_RESX];
+					uint32_t p2 = srcRow[srcYLookup[x+2] * DOOMGENERIC_RESX];
+					uint32_t p3 = srcRow[srcYLookup[x+3] * DOOMGENERIC_RESX];
+					dst[x]   = RGB888_TO_RGB565(p0);
+					dst[x+1] = RGB888_TO_RGB565(p1);
+					dst[x+2] = RGB888_TO_RGB565(p2);
+					dst[x+3] = RGB888_TO_RGB565(p3);
+				}
+				// Handle remaining pixels
+				for (; x < scaledOutW; x++) {
+					uint32_t pixel = srcRow[srcYLookup[x] * DOOMGENERIC_RESX];
+					dst[x] = RGB888_TO_RGB565(pixel);
+				}
+			}
+		}
+		
+		// Write frame to display
+		lseek(fbFd, 0, SEEK_SET);
+		write(fbFd, renderBuffer, renderBufferSize);
+	} else {
+		// Original 32-bit mmap path
+		for (int line = 0; line < DOOMGENERIC_RESY; line++) {
+			memcpy(
+				(void *)((uintptr_t)(fbPtr) + (fbStride * line) + fbOffsetY + fbOffsetX),
 				(void *)(((uintptr_t)DG_ScreenBuffer) + (DOOMGENERIC_RESX * line * fbBytesPerPixel)),
-			 (fbBytesPerPixel * DOOMGENERIC_RESX)
-		);
+				(fbBytesPerPixel * DOOMGENERIC_RESX)
+			);
+		}
 	}
 
 	checkKeys();
