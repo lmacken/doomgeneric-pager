@@ -48,7 +48,7 @@
 #define SIL_TOP			2
 #define SIL_BOTH		3
 
-#define MAXDRAWSEGS		256
+#define MAXDRAWSEGS		512  // Increased from 256 for complex maps
 
 
 
