@@ -22,6 +22,8 @@
 
 #define TICRATE 35
 
+#include "m_fixed.h"
+
 // Called by D_DoomLoop,
 // returns current time in tics.
 int I_GetTime (void);
@@ -37,6 +39,16 @@ void I_InitTimer(void);
 
 // Wait for vertical retrace or pause a bit.
 void I_WaitVBL(int count);
+
+// [crispy] For uncapped framerate interpolation
+// Returns how far into the current tic we are (0 to FRACUNIT)
+fixed_t I_GetFracRealTime(void);
+
+// Global fractional tic for interpolation (set each frame)
+extern fixed_t fractionaltic;
+
+// Enable/disable smooth uncapped framerate
+extern int crispy_uncapped;
 
 #endif
 

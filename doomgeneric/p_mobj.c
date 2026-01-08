@@ -32,6 +32,7 @@
 #include "s_sound.h"
 
 #include "doomstat.h"
+#include "r_things.h"
 
 
 void G_PlayerReborn (int player);
@@ -715,6 +716,9 @@ void P_SpawnPlayer (mapthing_t* mthing)
 
     // setup gun psprite
     P_SetupPsprites (p);
+
+    // [crispy] don't interpolate weapon sprite on spawn
+    pspr_interp = false;
     
     // give all cards in death match mode
     if (deathmatch)

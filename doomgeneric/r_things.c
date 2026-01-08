@@ -28,12 +28,17 @@
 
 #include "i_swap.h"
 #include "i_system.h"
+#include "i_timer.h"
+#include "d_loop.h"
 #include "z_zone.h"
 #include "w_wad.h"
 
 #include "r_local.h"
 
 #include "doomstat.h"
+
+// [crispy] interpolate weapon sprite bobbing
+boolean pspr_interp = true;
 
 
 
@@ -470,10 +475,30 @@ void R_ProjectSprite (mobj_t* thing)
     
     angle_t		ang;
     fixed_t		iscale;
+
+    // [crispy] interpolated sprite position
+    fixed_t		interpx, interpy, interpz;
+    angle_t		interpangle;
+    
+    // [crispy] interpolate sprite position for smooth movement
+    if (crispy_uncapped && thing->interp)
+    {
+        interpx = thing->oldx + FixedMul(thing->x - thing->oldx, fractionaltic);
+        interpy = thing->oldy + FixedMul(thing->y - thing->oldy, fractionaltic);
+        interpz = thing->oldz + FixedMul(thing->z - thing->oldz, fractionaltic);
+        interpangle = thing->oldangle + FixedMul(thing->angle - thing->oldangle, fractionaltic);
+    }
+    else
+    {
+        interpx = thing->x;
+        interpy = thing->y;
+        interpz = thing->z;
+        interpangle = thing->angle;
+    }
     
     // transform the origin point
-    tr_x = thing->x - viewx;
-    tr_y = thing->y - viewy;
+    tr_x = interpx - viewx;
+    tr_y = interpy - viewy;
 	
     gxt = FixedMul(tr_x,viewcos); 
     gyt = -FixedMul(tr_y,viewsin);
@@ -511,8 +536,9 @@ void R_ProjectSprite (mobj_t* thing)
     if (sprframe->rotate)
     {
 	// choose a different rotation based on player view
-	ang = R_PointToAngle (thing->x, thing->y);
-	rot = (ang-thing->angle+(unsigned)(ANG45/2)*9)>>29;
+	// [crispy] use interpolated position and angle
+	ang = R_PointToAngle (interpx, interpy);
+	rot = (ang-interpangle+(unsigned)(ANG45/2)*9)>>29;
 	lump = sprframe->lump[rot];
 	flip = (boolean)sprframe->flip[rot];
     }
@@ -542,10 +568,11 @@ void R_ProjectSprite (mobj_t* thing)
     vis = R_NewVisSprite ();
     vis->mobjflags = thing->flags;
     vis->scale = xscale<<detailshift;
-    vis->gx = thing->x;
-    vis->gy = thing->y;
-    vis->gz = thing->z;
-    vis->gzt = thing->z + spritetopoffset[lump];
+    // [crispy] use interpolated position
+    vis->gx = interpx;
+    vis->gy = interpy;
+    vis->gz = interpz;
+    vis->gzt = interpz + spritetopoffset[lump];
     vis->texturemid = vis->gzt - viewz;
     vis->x1 = x1 < 0 ? 0 : x1;
     vis->x2 = x2 >= viewwidth ? viewwidth-1 : x2;	
@@ -725,6 +752,47 @@ void R_DrawPSprite (pspdef_t* psp)
     {
 	// local light
 	vis->colormap = spritelights[MAXLIGHTSCALE-1];
+    }
+
+    // [crispy] interpolate weapon bobbing
+    if (crispy_uncapped)
+    {
+        static int     oldx1, x1_saved;
+        static fixed_t oldtexturemid, texturemid_saved;
+        static int     oldlump = -1;
+        static int     oldgametic = -1;
+
+        // Save values from previous tic
+        if (oldgametic < gametic)
+        {
+            oldx1 = x1_saved;
+            oldtexturemid = texturemid_saved;
+            oldgametic = gametic;
+        }
+
+        // Save current values for next tic
+        x1_saved = vis->x1;
+        texturemid_saved = vis->texturemid;
+
+        // Interpolate if same weapon sprite and interpolation is enabled
+        if (lump == oldlump && pspr_interp)
+        {
+            int deltax = vis->x2 - vis->x1;
+            // Interpolate x position - FixedMul handles the FRACUNIT division
+            vis->x1 = oldx1 + FixedMul(fractionaltic, vis->x1 - oldx1);
+            vis->x2 = vis->x1 + deltax;
+            if (vis->x2 >= viewwidth) vis->x2 = viewwidth - 1;
+            // Interpolate texture mid (vertical position)
+            vis->texturemid = oldtexturemid + FixedMul(fractionaltic, vis->texturemid - oldtexturemid);
+        }
+        else
+        {
+            // New weapon or first frame - don't interpolate
+            oldx1 = vis->x1;
+            oldtexturemid = vis->texturemid;
+            oldlump = lump;
+            pspr_interp = true;
+        }
     }
 	
     R_DrawVisSprite (vis, vis->x1, vis->x2);

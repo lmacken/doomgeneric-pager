@@ -94,3 +94,16 @@ void I_InitTimer(void)
     //SDL_Init(SDL_INIT_TIMER);
 }
 
+// [crispy] For uncapped framerate interpolation
+fixed_t fractionaltic = 0;
+int crispy_uncapped = 0;  // disabled by default, enable with -uncapped
+
+// Calculate how far into the current tic we are (0.0 to 1.0 in fixed-point)
+// Based on Crispy Doom's implementation
+fixed_t I_GetFracRealTime(void)
+{
+    // Time in ms modulo one tic period, converted to FRACUNIT scale
+    // TICRATE = 35, so one tic = 1000/35 ≈ 28.57ms
+    return (int64_t)I_GetTimeMS() * TICRATE % 1000 * FRACUNIT / 1000;
+}
+

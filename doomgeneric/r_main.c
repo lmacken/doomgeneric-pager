@@ -34,6 +34,34 @@
 
 #include "r_local.h"
 #include "r_sky.h"
+#include "i_timer.h"
+
+// [crispy] Linear interpolation between two values
+static inline fixed_t LerpFixed(fixed_t oldval, fixed_t newval)
+{
+    return oldval + FixedMul(newval - oldval, fractionaltic);
+}
+
+// [crispy] Interpolate between two angles
+static inline angle_t LerpAngle(angle_t oangle, angle_t nangle)
+{
+    if (nangle == oangle)
+        return oangle;
+    else if (nangle > oangle)
+    {
+        if (nangle - oangle < ANG180)
+            return oangle + (angle_t)((nangle - oangle) * fractionaltic / FRACUNIT);
+        else
+            return oangle - (angle_t)((oangle + (0xffffffff - nangle)) * fractionaltic / FRACUNIT);
+    }
+    else
+    {
+        if (oangle - nangle < ANG180)
+            return oangle - (angle_t)((oangle - nangle) * fractionaltic / FRACUNIT);
+        else
+            return oangle + (angle_t)((nangle + (0xffffffff - oangle)) * fractionaltic / FRACUNIT);
+    }
+}
 
 
 
@@ -754,6 +782,9 @@ void R_ExecuteSetViewSize (void)
 	    scalelight[i][j] = colormaps + level*256;
 	}
     }
+
+    // [crispy] don't interpolate weapon sprite after view size change
+    pspr_interp = false;
 }
 
 
@@ -825,12 +856,25 @@ void R_SetupFrame (player_t* player)
     int		i;
     
     viewplayer = player;
-    viewx = player->mo->x;
-    viewy = player->mo->y;
-    viewangle = player->mo->angle + viewangleoffset;
     extralight = player->extralight;
 
+    // Always set base values first (original code path)
+    viewx = player->mo->x;
+    viewy = player->mo->y;
     viewz = player->viewz;
+    viewangle = player->mo->angle + viewangleoffset;
+
+    // [crispy] Update fractionaltic and apply interpolation if enabled
+    if (crispy_uncapped && player->mo->interp)
+    {
+        fractionaltic = I_GetFracRealTime();
+        
+        // Interpolate player camera position for smooth movement
+        viewx = LerpFixed(player->mo->oldx, player->mo->x);
+        viewy = LerpFixed(player->mo->oldy, player->mo->y);
+        viewz = LerpFixed(player->prev_viewz, player->viewz);
+        viewangle = LerpAngle(player->prev_viewangle, player->mo->angle + viewangleoffset);
+    }
     
     viewsin = finesine[viewangle>>ANGLETOFINESHIFT];
     viewcos = finecosine[viewangle>>ANGLETOFINESHIFT];

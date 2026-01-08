@@ -85,6 +85,9 @@ typedef struct player_s
     //  including viewpoint bobbing during movement.
     // Focal origin above r.z
     fixed_t		viewz;
+    // [crispy] For smooth uncapped framerate interpolation
+    fixed_t		prev_viewz;
+    angle_t		prev_viewangle;
     // Base height above floor for viewz.
     fixed_t		viewheight;
     // Bob/squat speed.

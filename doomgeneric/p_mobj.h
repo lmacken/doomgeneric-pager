@@ -208,6 +208,13 @@ typedef struct mobj_s
     fixed_t		y;
     fixed_t		z;
 
+    // [crispy] For smooth uncapped framerate interpolation
+    fixed_t		oldx;
+    fixed_t		oldy;
+    fixed_t		oldz;
+    angle_t		oldangle;
+    int			interp;  // if true, interpolate this tic
+
     // More list: links in sector (if needed)
     struct mobj_s*	snext;
     struct mobj_s*	sprev;

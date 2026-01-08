@@ -96,15 +96,22 @@ static inline void *aligned_alloc_cached(size_t size) {
 // timing stuff
 static struct timeval startTime;
 
-// FPS and timing tracking (writes to file, not stderr - stderr crashes SIGIL!)
+// FPS and timing tracking (disabled by default for performance)
+// Enable with -fpsdebug flag
 static uint32_t frameCount = 0;
 static uint32_t lastFpsTime = 0;
-static uint32_t currentFps = 0;
 static uint32_t totalWriteTimeMs = 0;  // Accumulated write() time
-static uint32_t avgWriteTimeMs = 0;    // Average write time per frame
 static int useVsync = 0;               // If 1, fsync after write (no tearing but ~10 FPS)
 static int fpsFd = -1;                 // File descriptor for FPS logging
+static int useFpsDebug = 0;            // Disabled by default
 #define FPS_UPDATE_INTERVAL_MS 1000  // Update FPS every second
+
+// Frame pacing - cap at DOOM's native 35 tics/second
+// Saves CPU and provides consistent frame timing
+#define TARGET_FPS 35
+#define FRAME_TIME_MS (1000 / TARGET_FPS)  // ~28ms per frame
+static uint32_t lastFrameTime = 0;
+static int useFrameCap = 1;  // Enabled by default, disable with -uncapped
 
 // framebuffer stuff 
 static uint8_t *fbPtr;
@@ -600,6 +607,20 @@ void DG_Init() {
 		printf("VSync enabled (tear-free but slower)\n");
 	}
 
+	// Check for -uncapped to disable frame pacing (default: capped at 35 FPS)
+	if (M_CheckParm("-uncapped")) {
+		useFrameCap = 0;
+		printf("Frame cap disabled (uncapped FPS)\n");
+	} else {
+		printf("Frame pacing: %d FPS target\n", TARGET_FPS);
+	}
+
+	// Check for -fpsdebug to enable FPS logging to /tmp/fps.log
+	if (M_CheckParm("-fpsdebug")) {
+		useFpsDebug = 1;
+		printf("FPS debug logging enabled (/tmp/fps.log)\n");
+	}
+
 	// Set up signal handlers for clean exit
 	signal(SIGINT, cleanup_and_exit);
 	signal(SIGTERM, cleanup_and_exit);
@@ -764,6 +785,16 @@ static inline uint16_t rgb32_to_rgb565(uint32_t pixel) {
 }
 
 void DG_DrawFrame() {
+	// Frame pacing - sleep to hit target FPS, saves CPU and provides consistent timing
+	if (useFrameCap) {
+		uint32_t now = DG_GetTicksMs();
+		uint32_t elapsed = now - lastFrameTime;
+		if (elapsed < FRAME_TIME_MS) {
+			usleep((FRAME_TIME_MS - elapsed) * 1000);
+		}
+		lastFrameTime = DG_GetTicksMs();
+	}
+
 	if (fbIs16Bit) {
 		// OPTIMIZED 16-bit RGB565 path with 90° CCW rotation
 		// Uses precomputed palette lookup - reads directly from I_VideoBuffer (8-bit indexed)
@@ -823,14 +854,16 @@ void DG_DrawFrame() {
 			}
 		}
 		
-		// Write frame to display (measure time)
-		uint32_t writeStart = DG_GetTicksMs();
+		// Write frame to display
+		uint32_t writeStart = useFpsDebug ? DG_GetTicksMs() : 0;
 		lseek(fbFd, 0, SEEK_SET);
 		write(fbFd, renderBuffer, renderBufferSize);
 		if (useVsync) {
 			fsync(fbFd);  // Wait for SPI transfer (~95ms, ~10 FPS but no tearing)
 		}
-		totalWriteTimeMs += DG_GetTicksMs() - writeStart;
+		if (useFpsDebug) {
+			totalWriteTimeMs += DG_GetTicksMs() - writeStart;
+		}
 	} else {
 		// Original 32-bit mmap path
 		for (int line = 0; line < DOOMGENERIC_RESY; line++) {
@@ -842,26 +875,27 @@ void DG_DrawFrame() {
 		}
 	}
 
-	// FPS tracking - write to file (stderr causes SIGIL to crash!)
-	frameCount++;
-	uint32_t now = DG_GetTicksMs();
-	if (now - lastFpsTime >= FPS_UPDATE_INTERVAL_MS) {
-		currentFps = (frameCount * 1000) / (now - lastFpsTime);
-		avgWriteTimeMs = frameCount > 0 ? totalWriteTimeMs / frameCount : 0;
-		uint32_t displayFps = avgWriteTimeMs > 0 ? 1000 / avgWriteTimeMs : 0;
-		// Write to file instead of stderr - stderr causes crashes on intensive maps
-		if (fpsFd < 0) {
-			fpsFd = open("/tmp/fps.log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	// FPS tracking - only if enabled with -fpsdebug (disabled by default for performance)
+	if (useFpsDebug) {
+		frameCount++;
+		uint32_t now = DG_GetTicksMs();
+		if (now - lastFpsTime >= FPS_UPDATE_INTERVAL_MS) {
+			uint32_t currentFps = (frameCount * 1000) / (now - lastFpsTime);
+			uint32_t avgWriteTimeMs = frameCount > 0 ? totalWriteTimeMs / frameCount : 0;
+			uint32_t displayFps = avgWriteTimeMs > 0 ? 1000 / avgWriteTimeMs : 0;
+			if (fpsFd < 0) {
+				fpsFd = open("/tmp/fps.log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+			}
+			if (fpsFd >= 0) {
+				char buf[64];
+				int len = snprintf(buf, sizeof(buf), "FPS: %u | write: %ums | display: ~%u fps\n", 
+					currentFps, avgWriteTimeMs, displayFps);
+				write(fpsFd, buf, len);
+			}
+			frameCount = 0;
+			totalWriteTimeMs = 0;
+			lastFpsTime = now;
 		}
-		if (fpsFd >= 0) {
-			char buf[64];
-			int len = snprintf(buf, sizeof(buf), "FPS: %u | write: %ums | display: ~%u fps\n", 
-				currentFps, avgWriteTimeMs, displayFps);
-			write(fpsFd, buf, len);
-		}
-		frameCount = 0;
-		totalWriteTimeMs = 0;
-		lastFpsTime = now;
 	}
 
 	checkKeys();
