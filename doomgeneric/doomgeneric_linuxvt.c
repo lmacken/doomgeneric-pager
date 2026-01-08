@@ -96,6 +96,11 @@ static inline void *aligned_alloc_cached(size_t size) {
 // timing stuff
 static struct timeval startTime;
 
+// Frame rate limiter - target ~30 FPS for smooth SPI display updates
+// The SPI display can't keep up with faster rendering anyway
+#define TARGET_FRAME_TIME_MS 33  // ~30 FPS
+static uint32_t lastFrameTime = 0;
+
 // framebuffer stuff 
 static uint8_t *fbPtr;
 // These are non-static so net_lobby.c can access them for lobby drawing
@@ -753,6 +758,9 @@ void DG_DrawFrame() {
 		// This bypasses DG_ScreenBuffer entirely, eliminating per-pixel RGB conversion!
 		byte *srcBuf = I_VideoBuffer;
 		
+		// Cache palette pointer locally for faster access
+		const uint16_t *palette = rgb565_palette;
+		
 		// Use aspect-correct rendering for title/menu screens, stretched for gameplay
 		int useAspectCorrect = (gamestate != GS_LEVEL);
 		
@@ -761,36 +769,44 @@ void DG_DrawFrame() {
 			memset(renderBuffer, 0, renderBufferSize);
 			
 			// Render with correct aspect ratio (centered with vertical black bars)
-			// Direct palette lookup: srcBuf[y*320+x] -> rgb565_palette[index]
+			// Direct palette lookup: srcBuf[y*320+x] -> palette[index]
 			for (unsigned int y = 0; y < aspectOutH; y++) {
 				uint16_t *dst = renderBuffer + (y + aspectOffY) * fbWidth;
 				unsigned int srcX = srcXLookupAspect[y];
+				const unsigned int *yLookup = srcYLookupAspect;
 				
 				// Prefetch next row's lookup value for better cache behavior
-				if (y + 1 < aspectOutH) {
-					__builtin_prefetch(&srcXLookupAspect[y + 1], 0, 3);
-				}
+				__builtin_prefetch(&srcXLookupAspect[y + 1], 0, 3);
 				
-				// Process 4 pixels at a time with palette lookup
+				// Process 8 pixels at a time using 32-bit writes (2 pixels per write)
 				unsigned int x = 0;
-				for (; x + 3 < aspectOutW; x += 4) {
-					// Prefetch source data for next batch (8 pixels ahead)
-					if (x + 8 < aspectOutW) {
-						__builtin_prefetch(&srcBuf[srcYLookupAspect[x+8] * DOOMGENERIC_RESX + srcX], 0, 0);
-					}
-					byte idx0 = srcBuf[srcYLookupAspect[x]   * DOOMGENERIC_RESX + srcX];
-					byte idx1 = srcBuf[srcYLookupAspect[x+1] * DOOMGENERIC_RESX + srcX];
-					byte idx2 = srcBuf[srcYLookupAspect[x+2] * DOOMGENERIC_RESX + srcX];
-					byte idx3 = srcBuf[srcYLookupAspect[x+3] * DOOMGENERIC_RESX + srcX];
-					dst[x]   = rgb565_palette[idx0];
-					dst[x+1] = rgb565_palette[idx1];
-					dst[x+2] = rgb565_palette[idx2];
-					dst[x+3] = rgb565_palette[idx3];
+				uint32_t *dst32 = (uint32_t *)dst;
+				for (; x + 7 < aspectOutW; x += 8) {
+					// Prefetch source data for next batch (16 pixels ahead)
+					__builtin_prefetch(&srcBuf[yLookup[x+16] * DOOMGENERIC_RESX + srcX], 0, 0);
+					
+					// Load 8 palette indices
+					byte idx0 = srcBuf[yLookup[x]   * DOOMGENERIC_RESX + srcX];
+					byte idx1 = srcBuf[yLookup[x+1] * DOOMGENERIC_RESX + srcX];
+					byte idx2 = srcBuf[yLookup[x+2] * DOOMGENERIC_RESX + srcX];
+					byte idx3 = srcBuf[yLookup[x+3] * DOOMGENERIC_RESX + srcX];
+					byte idx4 = srcBuf[yLookup[x+4] * DOOMGENERIC_RESX + srcX];
+					byte idx5 = srcBuf[yLookup[x+5] * DOOMGENERIC_RESX + srcX];
+					byte idx6 = srcBuf[yLookup[x+6] * DOOMGENERIC_RESX + srcX];
+					byte idx7 = srcBuf[yLookup[x+7] * DOOMGENERIC_RESX + srcX];
+					
+					// Write 4 pairs of pixels using 32-bit writes
+					dst32[0] = palette[idx0] | ((uint32_t)palette[idx1] << 16);
+					dst32[1] = palette[idx2] | ((uint32_t)palette[idx3] << 16);
+					dst32[2] = palette[idx4] | ((uint32_t)palette[idx5] << 16);
+					dst32[3] = palette[idx6] | ((uint32_t)palette[idx7] << 16);
+					dst32 += 4;
 				}
 				// Handle remaining pixels
+				dst = (uint16_t *)dst32;
 				for (; x < aspectOutW; x++) {
-					byte idx = srcBuf[srcYLookupAspect[x] * DOOMGENERIC_RESX + srcX];
-					dst[x] = rgb565_palette[idx];
+					byte idx = srcBuf[yLookup[x] * DOOMGENERIC_RESX + srcX];
+					*dst++ = palette[idx];
 				}
 			}
 		} else {
@@ -799,32 +815,40 @@ void DG_DrawFrame() {
 			for (unsigned int y = 0; y < scaledOutH; y++) {
 				uint16_t *dst = renderBuffer + (y + scaledOffY) * fbWidth;
 				unsigned int srcX = srcXLookup[y];
+				const unsigned int *yLookup = srcYLookup;
 				
 				// Prefetch next row's lookup value
-				if (y + 1 < scaledOutH) {
-					__builtin_prefetch(&srcXLookup[y + 1], 0, 3);
-				}
+				__builtin_prefetch(&srcXLookup[y + 1], 0, 3);
 				
-				// Process 4 pixels at a time with palette lookup
+				// Process 8 pixels at a time using 32-bit writes (2 pixels per write)
 				unsigned int x = 0;
-				for (; x + 3 < scaledOutW; x += 4) {
-					// Prefetch source data for next batch (8 pixels ahead)
-					if (x + 8 < scaledOutW) {
-						__builtin_prefetch(&srcBuf[srcYLookup[x+8] * DOOMGENERIC_RESX + srcX], 0, 0);
-					}
-					byte idx0 = srcBuf[srcYLookup[x]   * DOOMGENERIC_RESX + srcX];
-					byte idx1 = srcBuf[srcYLookup[x+1] * DOOMGENERIC_RESX + srcX];
-					byte idx2 = srcBuf[srcYLookup[x+2] * DOOMGENERIC_RESX + srcX];
-					byte idx3 = srcBuf[srcYLookup[x+3] * DOOMGENERIC_RESX + srcX];
-					dst[x]   = rgb565_palette[idx0];
-					dst[x+1] = rgb565_palette[idx1];
-					dst[x+2] = rgb565_palette[idx2];
-					dst[x+3] = rgb565_palette[idx3];
+				uint32_t *dst32 = (uint32_t *)dst;
+				for (; x + 7 < scaledOutW; x += 8) {
+					// Prefetch source data for next batch (16 pixels ahead)
+					__builtin_prefetch(&srcBuf[yLookup[x+16] * DOOMGENERIC_RESX + srcX], 0, 0);
+					
+					// Load 8 palette indices
+					byte idx0 = srcBuf[yLookup[x]   * DOOMGENERIC_RESX + srcX];
+					byte idx1 = srcBuf[yLookup[x+1] * DOOMGENERIC_RESX + srcX];
+					byte idx2 = srcBuf[yLookup[x+2] * DOOMGENERIC_RESX + srcX];
+					byte idx3 = srcBuf[yLookup[x+3] * DOOMGENERIC_RESX + srcX];
+					byte idx4 = srcBuf[yLookup[x+4] * DOOMGENERIC_RESX + srcX];
+					byte idx5 = srcBuf[yLookup[x+5] * DOOMGENERIC_RESX + srcX];
+					byte idx6 = srcBuf[yLookup[x+6] * DOOMGENERIC_RESX + srcX];
+					byte idx7 = srcBuf[yLookup[x+7] * DOOMGENERIC_RESX + srcX];
+					
+					// Write 4 pairs of pixels using 32-bit writes
+					dst32[0] = palette[idx0] | ((uint32_t)palette[idx1] << 16);
+					dst32[1] = palette[idx2] | ((uint32_t)palette[idx3] << 16);
+					dst32[2] = palette[idx4] | ((uint32_t)palette[idx5] << 16);
+					dst32[3] = palette[idx6] | ((uint32_t)palette[idx7] << 16);
+					dst32 += 4;
 				}
 				// Handle remaining pixels
+				dst = (uint16_t *)dst32;
 				for (; x < scaledOutW; x++) {
-					byte idx = srcBuf[srcYLookup[x] * DOOMGENERIC_RESX + srcX];
-					dst[x] = rgb565_palette[idx];
+					byte idx = srcBuf[yLookup[x] * DOOMGENERIC_RESX + srcX];
+					*dst++ = palette[idx];
 				}
 			}
 		}
