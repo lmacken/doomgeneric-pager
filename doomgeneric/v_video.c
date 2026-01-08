@@ -42,8 +42,9 @@
 #endif
 
 // TODO: There are separate RANGECHECK defines for different games, but this
-// is common code. Fix this.
-#define RANGECHECK
+// is common code. Fix this. 
+// Disabled for BFG Edition compatibility (560px wide title screens)
+// #define RANGECHECK
 
 // Blending table used for fuzzpatch, etc.
 // Only used in Heretic/Hexen
@@ -137,7 +138,7 @@ void V_SetPatchClipCallback(vpatchclipfunc_t func)
 //
 
 void V_DrawPatch(int x, int y, patch_t *patch)
-{ 
+{
     int count;
     int col;
     column_t *column;
@@ -156,38 +157,64 @@ void V_DrawPatch(int x, int y, patch_t *patch)
             return;
     }
 
-#ifdef RANGECHECK
-    if (x < 0
-     || x + SHORT(patch->width) > SCREENWIDTH
-     || y < 0
-     || y + SHORT(patch->height) > SCREENHEIGHT)
-    {
-        I_Error("Bad V_DrawPatch x=%i y=%i patch.width=%i patch.height=%i topoffset=%i leftoffset=%i", x, y, patch->width, patch->height, patch->topoffset, patch->leftoffset);
-    }
-#endif
-
-    V_MarkRect(x, y, SHORT(patch->width), SHORT(patch->height));
-
-    col = 0;
-    desttop = dest_screen + y * SCREENWIDTH + x;
-
     w = SHORT(patch->width);
 
-    for ( ; col<w ; x++, col++, desttop++)
+    // BFG Edition support: Center oversized patches horizontally
+    if (w > SCREENWIDTH) {
+        x -= (w - SCREENWIDTH) / 2;
+    }
+
+    // Set up base destination - this is where column 0 would go
+    desttop = dest_screen + y * SCREENWIDTH + x;
+
+    for (col = 0; col < w; col++, x++, desttop++)
     {
+        // Skip columns that are off-screen left
+        if (x < 0)
+            continue;
+        // Stop if we've gone off-screen right
+        if (x >= SCREENWIDTH)
+            break;
+
         column = (column_t *)((byte *)patch + LONG(patch->columnofs[col]));
 
         // step through the posts in a column
         while (column->topdelta != 0xff)
         {
-            source = (byte *)column + 3;
-            dest = desttop + column->topdelta*SCREENWIDTH;
-            count = column->length;
+            int post_y = y + column->topdelta;
+            int post_length = column->length;
+            int draw_y = post_y;
+            int draw_count = post_length;
+            int src_skip = 0;
 
-            while (count--)
+            source = (byte *)column + 3;
+
+            // Clip top
+            if (draw_y < 0)
             {
-                *dest = *source++;
-                dest += SCREENWIDTH;
+                src_skip = -draw_y;
+                draw_count -= src_skip;
+                draw_y = 0;
+            }
+
+            // Clip bottom
+            if (draw_y + draw_count > SCREENHEIGHT)
+            {
+                draw_count = SCREENHEIGHT - draw_y;
+            }
+
+            // Draw if anything visible
+            if (draw_count > 0)
+            {
+                source += src_skip;
+                dest = dest_screen + draw_y * SCREENWIDTH + x;
+                count = draw_count;
+
+                while (count--)
+                {
+                    *dest = *source++;
+                    dest += SCREENWIDTH;
+                }
             }
             column = (column_t *)((byte *)column + column->length + 4);
         }
@@ -203,15 +230,15 @@ void V_DrawPatch(int x, int y, patch_t *patch)
 void V_DrawPatchFlipped(int x, int y, patch_t *patch)
 {
     int count;
-    int col; 
-    column_t *column; 
+    int col;
+    column_t *column;
     byte *desttop;
     byte *dest;
-    byte *source; 
-    int w; 
- 
-    y -= SHORT(patch->topoffset); 
-    x -= SHORT(patch->leftoffset); 
+    byte *source;
+    int w;
+
+    y -= SHORT(patch->topoffset);
+    x -= SHORT(patch->leftoffset);
 
     // haleyjd 08/28/10: Strife needs silent error checking here.
     if(patchclip_callback)
@@ -220,38 +247,64 @@ void V_DrawPatchFlipped(int x, int y, patch_t *patch)
             return;
     }
 
-#ifdef RANGECHECK 
-    if (x < 0
-     || x + SHORT(patch->width) > SCREENWIDTH
-     || y < 0
-     || y + SHORT(patch->height) > SCREENHEIGHT)
-    {
-        I_Error("Bad V_DrawPatchFlipped");
-    }
-#endif
-
-    V_MarkRect (x, y, SHORT(patch->width), SHORT(patch->height));
-
-    col = 0;
-    desttop = dest_screen + y * SCREENWIDTH + x;
-
     w = SHORT(patch->width);
 
-    for ( ; col<w ; x++, col++, desttop++)
+    // BFG Edition support: Center oversized patches horizontally
+    if (w > SCREENWIDTH) {
+        x -= (w - SCREENWIDTH) / 2;
+    }
+
+    // Set up base destination
+    desttop = dest_screen + y * SCREENWIDTH + x;
+
+    for (col = 0; col < w; col++, x++, desttop++)
     {
+        // Skip columns that are off-screen left
+        if (x < 0)
+            continue;
+        // Stop if we've gone off-screen right
+        if (x >= SCREENWIDTH)
+            break;
+
         column = (column_t *)((byte *)patch + LONG(patch->columnofs[w-1-col]));
 
         // step through the posts in a column
-        while (column->topdelta != 0xff )
+        while (column->topdelta != 0xff)
         {
-            source = (byte *)column + 3;
-            dest = desttop + column->topdelta*SCREENWIDTH;
-            count = column->length;
+            int post_y = y + column->topdelta;
+            int post_length = column->length;
+            int draw_y = post_y;
+            int draw_count = post_length;
+            int src_skip = 0;
 
-            while (count--)
+            source = (byte *)column + 3;
+
+            // Clip top
+            if (draw_y < 0)
             {
-                *dest = *source++;
-                dest += SCREENWIDTH;
+                src_skip = -draw_y;
+                draw_count -= src_skip;
+                draw_y = 0;
+            }
+
+            // Clip bottom
+            if (draw_y + draw_count > SCREENHEIGHT)
+            {
+                draw_count = SCREENHEIGHT - draw_y;
+            }
+
+            // Draw if anything visible
+            if (draw_count > 0)
+            {
+                source += src_skip;
+                dest = dest_screen + draw_y * SCREENWIDTH + x;
+                count = draw_count;
+
+                while (count--)
+                {
+                    *dest = *source++;
+                    dest += SCREENWIDTH;
+                }
             }
             column = (column_t *)((byte *)column + column->length + 4);
         }
