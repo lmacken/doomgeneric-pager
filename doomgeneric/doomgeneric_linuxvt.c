@@ -144,6 +144,7 @@ static void cleanup_and_exit(int sig) {
 	if (srcYLookup) free(srcYLookup);
 	if (srcXLookupAspect) free(srcXLookupAspect);
 	if (srcYLookupAspect) free(srcYLookupAspect);
+	if (fpsFd >= 0) close(fpsFd);
 	if (fbFd >= 0) close(fbFd);
 	_exit(sig ? 128 + sig : 0);
 }
