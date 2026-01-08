@@ -67,6 +67,24 @@
 
 #include <stdbool.h>
 
+// External references to video buffers from i_video.c for optimized rendering
+// I_VideoBuffer: 8-bit indexed palette buffer (320x200)
+// rgb565_palette: Precomputed RGB565 lookup table (256 entries)
+extern byte *I_VideoBuffer;
+extern uint16_t rgb565_palette[256];
+
+// MIPS 24KEc has 32-byte cache lines - align hot buffers for optimal performance
+#define CACHE_LINE_SIZE 32
+
+// Helper for cache-aligned allocation (reduces cache line splits)
+static inline void *aligned_alloc_cached(size_t size) {
+    void *ptr;
+    // posix_memalign returns memory aligned to CACHE_LINE_SIZE boundary
+    if (posix_memalign(&ptr, CACHE_LINE_SIZE, size) != 0)
+        return NULL;
+    return ptr;
+}
+
 #define KEYQUEUE_SIZE 16
 
 #define MAX_INPUT_DEVS 16
@@ -621,8 +639,9 @@ void DG_Init() {
 		printf("Framebuffer: %dx%d, 16-bit RGB565\n", fbWidth, fbHeight);
 		
 		// Use write() for SPI displays - mmap causes glitches with fbtft
+		// OPTIMIZED: Cache-aligned allocation for better memory access patterns
 		renderBufferSize = fbWidth * fbHeight * sizeof(uint16_t);
-		renderBuffer = (uint16_t *)malloc(renderBufferSize);
+		renderBuffer = (uint16_t *)aligned_alloc_cached(renderBufferSize);
 		if (!renderBuffer)
 			I_Error("Failed to allocate render buffer");
 		memset(renderBuffer, 0, renderBufferSize);
@@ -643,8 +662,9 @@ void DG_Init() {
 		scaledOffY = 0;  // No offset, fills entire screen
 		
 		// Precompute lookup tables for STRETCHED scaling + rotation (gameplay)
-		srcXLookup = (unsigned int *)malloc(scaledOutH * sizeof(unsigned int));
-		srcYLookup = (unsigned int *)malloc(scaledOutW * sizeof(unsigned int));
+		// OPTIMIZED: Cache-aligned for sequential reads in render loop
+		srcXLookup = (unsigned int *)aligned_alloc_cached(scaledOutH * sizeof(unsigned int));
+		srcYLookup = (unsigned int *)aligned_alloc_cached(scaledOutW * sizeof(unsigned int));
 		
 		// For each display row (y), compute which Doom column (X) to sample
 		// Display Y maps to Doom X: srcX = y * DoomWidth / displayHeight
@@ -672,8 +692,9 @@ void DG_Init() {
 		if (aspectOutH > fbHeight) aspectOutH = fbHeight;
 		aspectOffY = (fbHeight - aspectOutH) / 2;  // Center vertically: (480 - 355) / 2 = 62
 		
-		srcXLookupAspect = (unsigned int *)malloc(aspectOutH * sizeof(unsigned int));
-		srcYLookupAspect = (unsigned int *)malloc(aspectOutW * sizeof(unsigned int));
+		// OPTIMIZED: Cache-aligned lookup tables
+		srcXLookupAspect = (unsigned int *)aligned_alloc_cached(aspectOutH * sizeof(unsigned int));
+		srcYLookupAspect = (unsigned int *)aligned_alloc_cached(aspectOutW * sizeof(unsigned int));
 		
 		// For each output row in the aspect-correct region, which Doom X to sample
 		for (unsigned int y = 0; y < aspectOutH; y++) {
@@ -717,7 +738,7 @@ void DG_Init() {
 	gettimeofday(&startTime, NULL);
 }
 
-// Convert 32-bit ARGB to 16-bit RGB565
+// Fallback: Convert 32-bit ARGB to 16-bit RGB565 (only used for 32-bit path)
 static inline uint16_t rgb32_to_rgb565(uint32_t pixel) {
 	uint8_t r = (pixel >> 16) & 0xFF;
 	uint8_t g = (pixel >> 8) & 0xFF;
@@ -725,14 +746,12 @@ static inline uint16_t rgb32_to_rgb565(uint32_t pixel) {
 	return ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
 }
 
-// Inline RGB8888 to RGB565 conversion
-#define RGB888_TO_RGB565(p) (((p >> 8) & 0xF800) | ((p >> 5) & 0x07E0) | ((p >> 3) & 0x001F))
-
 void DG_DrawFrame() {
 	if (fbIs16Bit) {
-		// Optimized 16-bit RGB565 with 90° CCW rotation
-		// Uses precomputed lookup tables to avoid per-pixel division
-		uint32_t *srcBuf = (uint32_t *)DG_ScreenBuffer;
+		// OPTIMIZED 16-bit RGB565 path with 90° CCW rotation
+		// Uses precomputed palette lookup - reads directly from I_VideoBuffer (8-bit indexed)
+		// This bypasses DG_ScreenBuffer entirely, eliminating per-pixel RGB conversion!
+		byte *srcBuf = I_VideoBuffer;
 		
 		// Use aspect-correct rendering for title/menu screens, stretched for gameplay
 		int useAspectCorrect = (gamestate != GS_LEVEL);
@@ -742,50 +761,70 @@ void DG_DrawFrame() {
 			memset(renderBuffer, 0, renderBufferSize);
 			
 			// Render with correct aspect ratio (centered with vertical black bars)
+			// Direct palette lookup: srcBuf[y*320+x] -> rgb565_palette[index]
 			for (unsigned int y = 0; y < aspectOutH; y++) {
 				uint16_t *dst = renderBuffer + (y + aspectOffY) * fbWidth;
-				uint32_t *srcRow = srcBuf + srcXLookupAspect[y];
+				unsigned int srcX = srcXLookupAspect[y];
 				
-				// Process 4 pixels at a time when possible
+				// Prefetch next row's lookup value for better cache behavior
+				if (y + 1 < aspectOutH) {
+					__builtin_prefetch(&srcXLookupAspect[y + 1], 0, 3);
+				}
+				
+				// Process 4 pixels at a time with palette lookup
 				unsigned int x = 0;
 				for (; x + 3 < aspectOutW; x += 4) {
-					uint32_t p0 = srcRow[srcYLookupAspect[x] * DOOMGENERIC_RESX];
-					uint32_t p1 = srcRow[srcYLookupAspect[x+1] * DOOMGENERIC_RESX];
-					uint32_t p2 = srcRow[srcYLookupAspect[x+2] * DOOMGENERIC_RESX];
-					uint32_t p3 = srcRow[srcYLookupAspect[x+3] * DOOMGENERIC_RESX];
-					dst[x]   = RGB888_TO_RGB565(p0);
-					dst[x+1] = RGB888_TO_RGB565(p1);
-					dst[x+2] = RGB888_TO_RGB565(p2);
-					dst[x+3] = RGB888_TO_RGB565(p3);
+					// Prefetch source data for next batch (8 pixels ahead)
+					if (x + 8 < aspectOutW) {
+						__builtin_prefetch(&srcBuf[srcYLookupAspect[x+8] * DOOMGENERIC_RESX + srcX], 0, 0);
+					}
+					byte idx0 = srcBuf[srcYLookupAspect[x]   * DOOMGENERIC_RESX + srcX];
+					byte idx1 = srcBuf[srcYLookupAspect[x+1] * DOOMGENERIC_RESX + srcX];
+					byte idx2 = srcBuf[srcYLookupAspect[x+2] * DOOMGENERIC_RESX + srcX];
+					byte idx3 = srcBuf[srcYLookupAspect[x+3] * DOOMGENERIC_RESX + srcX];
+					dst[x]   = rgb565_palette[idx0];
+					dst[x+1] = rgb565_palette[idx1];
+					dst[x+2] = rgb565_palette[idx2];
+					dst[x+3] = rgb565_palette[idx3];
 				}
 				// Handle remaining pixels
 				for (; x < aspectOutW; x++) {
-					uint32_t pixel = srcRow[srcYLookupAspect[x] * DOOMGENERIC_RESX];
-					dst[x] = RGB888_TO_RGB565(pixel);
+					byte idx = srcBuf[srcYLookupAspect[x] * DOOMGENERIC_RESX + srcX];
+					dst[x] = rgb565_palette[idx];
 				}
 			}
 		} else {
 			// Full-screen stretched rendering (gameplay with FOV correction)
+			// Direct palette lookup from I_VideoBuffer
 			for (unsigned int y = 0; y < scaledOutH; y++) {
 				uint16_t *dst = renderBuffer + (y + scaledOffY) * fbWidth;
-				uint32_t *srcRow = srcBuf + srcXLookup[y];
+				unsigned int srcX = srcXLookup[y];
 				
-				// Process 4 pixels at a time when possible
+				// Prefetch next row's lookup value
+				if (y + 1 < scaledOutH) {
+					__builtin_prefetch(&srcXLookup[y + 1], 0, 3);
+				}
+				
+				// Process 4 pixels at a time with palette lookup
 				unsigned int x = 0;
 				for (; x + 3 < scaledOutW; x += 4) {
-					uint32_t p0 = srcRow[srcYLookup[x] * DOOMGENERIC_RESX];
-					uint32_t p1 = srcRow[srcYLookup[x+1] * DOOMGENERIC_RESX];
-					uint32_t p2 = srcRow[srcYLookup[x+2] * DOOMGENERIC_RESX];
-					uint32_t p3 = srcRow[srcYLookup[x+3] * DOOMGENERIC_RESX];
-					dst[x]   = RGB888_TO_RGB565(p0);
-					dst[x+1] = RGB888_TO_RGB565(p1);
-					dst[x+2] = RGB888_TO_RGB565(p2);
-					dst[x+3] = RGB888_TO_RGB565(p3);
+					// Prefetch source data for next batch (8 pixels ahead)
+					if (x + 8 < scaledOutW) {
+						__builtin_prefetch(&srcBuf[srcYLookup[x+8] * DOOMGENERIC_RESX + srcX], 0, 0);
+					}
+					byte idx0 = srcBuf[srcYLookup[x]   * DOOMGENERIC_RESX + srcX];
+					byte idx1 = srcBuf[srcYLookup[x+1] * DOOMGENERIC_RESX + srcX];
+					byte idx2 = srcBuf[srcYLookup[x+2] * DOOMGENERIC_RESX + srcX];
+					byte idx3 = srcBuf[srcYLookup[x+3] * DOOMGENERIC_RESX + srcX];
+					dst[x]   = rgb565_palette[idx0];
+					dst[x+1] = rgb565_palette[idx1];
+					dst[x+2] = rgb565_palette[idx2];
+					dst[x+3] = rgb565_palette[idx3];
 				}
 				// Handle remaining pixels
 				for (; x < scaledOutW; x++) {
-					uint32_t pixel = srcRow[srcYLookup[x] * DOOMGENERIC_RESX];
-					dst[x] = RGB888_TO_RGB565(pixel);
+					byte idx = srcBuf[srcYLookup[x] * DOOMGENERIC_RESX + srcX];
+					dst[x] = rgb565_palette[idx];
 				}
 			}
 		}

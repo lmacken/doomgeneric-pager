@@ -128,9 +128,10 @@ typedef struct
 	byte b;
 } col_t;
 
-// Palette converted to RGB565
+// Palette converted to RGB565 - exported for use by doomgeneric_linuxvt.c
+// This is precomputed when palette changes to avoid per-pixel conversion
 
-static uint16_t rgb565_palette[256];
+uint16_t rgb565_palette[256];
 
 void cmap_to_rgb565(uint16_t * out, uint8_t * in, int in_pixels)
 {
@@ -388,28 +389,23 @@ void I_ReadScreen (byte* scr)
 void I_SetPalette (byte* palette)
 {
 	int i;
-	//col_t* c;
 
-	//for (i = 0; i < 256; i++)
-	//{
-	//	c = (col_t*)palette;
-
-	//	rgb565_palette[i] = GFX_RGB565(gammatable[usegamma][c->r],
-	//								   gammatable[usegamma][c->g],
-	//								   gammatable[usegamma][c->b]);
-
-	//	palette += 3;
-	//}
-    
-
-    /* performance boost:
-     * map to the right pixel format over here! */
+    /* Performance optimization:
+     * Precompute both RGBA and RGB565 palettes when palette changes.
+     * This eliminates per-pixel color conversion in the render loop. */
 
     for (i=0; i<256; ++i ) {
+        byte r = gammatable[usegamma][*palette++];
+        byte g = gammatable[usegamma][*palette++];
+        byte b = gammatable[usegamma][*palette++];
+        
         colors[i].a = 0;
-        colors[i].r = gammatable[usegamma][*palette++];
-        colors[i].g = gammatable[usegamma][*palette++];
-        colors[i].b = gammatable[usegamma][*palette++];
+        colors[i].r = r;
+        colors[i].g = g;
+        colors[i].b = b;
+        
+        // Precompute RGB565 for 16-bit framebuffers (avoids 5 bitwise ops per pixel)
+        rgb565_palette[i] = ((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3);
     }
 
 #ifdef CMAP256
