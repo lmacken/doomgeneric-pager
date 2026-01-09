@@ -391,31 +391,96 @@ static void addKeyToQueue(int pressed, unsigned int keyCode) {
 		greenButtonPressed = pressed;
 		
 		// When Green is RELEASED, release any active combo keys
-		// This fixes the "stuck strafe" bug when Green is released before D-pad
+		// If D-pad is still held, resume normal arrow key behavior
 		if (wasGreenPressed && !pressed) {
 			if (comboStrafeLActive) {
 				unsigned short releaseData = (0 << 8) | KEY_STRAFE_L;
 				s_KeyQueue[s_KeyQueueWriteIndex] = releaseData;
 				s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
 				comboStrafeLActive = 0;
+				// If D-pad still held, resume turning
+				if (dpadLeftPressed) {
+					unsigned short pressArrow = (1 << 8) | KEY_LEFTARROW;
+					s_KeyQueue[s_KeyQueueWriteIndex] = pressArrow;
+					s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
+				}
 			}
 			if (comboStrafeRActive) {
 				unsigned short releaseData = (0 << 8) | KEY_STRAFE_R;
 				s_KeyQueue[s_KeyQueueWriteIndex] = releaseData;
 				s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
 				comboStrafeRActive = 0;
+				if (dpadRightPressed) {
+					unsigned short pressArrow = (1 << 8) | KEY_RIGHTARROW;
+					s_KeyQueue[s_KeyQueueWriteIndex] = pressArrow;
+					s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
+				}
 			}
 			if (comboUseActive) {
 				unsigned short releaseData = (0 << 8) | KEY_USE;
 				s_KeyQueue[s_KeyQueueWriteIndex] = releaseData;
 				s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
 				comboUseActive = 0;
+				if (dpadUpPressed) {
+					unsigned short pressArrow = (1 << 8) | KEY_UPARROW;
+					s_KeyQueue[s_KeyQueueWriteIndex] = pressArrow;
+					s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
+				}
 			}
 			if (comboMapActive) {
 				unsigned short releaseData = (0 << 8) | DOOM_KEY_TAB;
 				s_KeyQueue[s_KeyQueueWriteIndex] = releaseData;
 				s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
 				comboMapActive = 0;
+				if (dpadDownPressed) {
+					unsigned short pressArrow = (1 << 8) | KEY_DOWNARROW;
+					s_KeyQueue[s_KeyQueueWriteIndex] = pressArrow;
+					s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
+				}
+			}
+		}
+		
+		// When Green is PRESSED, start combo for any D-pad already held
+		// This fixes the case where D-pad is pressed before Green
+		// We need to: 1) Release the normal arrow key, 2) Press the combo key
+		if (!wasGreenPressed && pressed) {
+			if (dpadLeftPressed && !comboStrafeLActive) {
+				// Release the normal left arrow first
+				unsigned short releaseArrow = (0 << 8) | KEY_LEFTARROW;
+				s_KeyQueue[s_KeyQueueWriteIndex] = releaseArrow;
+				s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
+				// Then press strafe
+				unsigned short pressData = (1 << 8) | KEY_STRAFE_L;
+				s_KeyQueue[s_KeyQueueWriteIndex] = pressData;
+				s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
+				comboStrafeLActive = 1;
+			}
+			if (dpadRightPressed && !comboStrafeRActive) {
+				unsigned short releaseArrow = (0 << 8) | KEY_RIGHTARROW;
+				s_KeyQueue[s_KeyQueueWriteIndex] = releaseArrow;
+				s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
+				unsigned short pressData = (1 << 8) | KEY_STRAFE_R;
+				s_KeyQueue[s_KeyQueueWriteIndex] = pressData;
+				s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
+				comboStrafeRActive = 1;
+			}
+			if (dpadUpPressed && !comboUseActive) {
+				unsigned short releaseArrow = (0 << 8) | KEY_UPARROW;
+				s_KeyQueue[s_KeyQueueWriteIndex] = releaseArrow;
+				s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
+				unsigned short pressData = (1 << 8) | KEY_USE;
+				s_KeyQueue[s_KeyQueueWriteIndex] = pressData;
+				s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
+				comboUseActive = 1;
+			}
+			if (dpadDownPressed && !comboMapActive) {
+				unsigned short releaseArrow = (0 << 8) | KEY_DOWNARROW;
+				s_KeyQueue[s_KeyQueueWriteIndex] = releaseArrow;
+				s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
+				unsigned short pressData = (1 << 8) | DOOM_KEY_TAB;
+				s_KeyQueue[s_KeyQueueWriteIndex] = pressData;
+				s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
+				comboMapActive = 1;
 			}
 		}
 	}
