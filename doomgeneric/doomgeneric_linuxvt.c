@@ -115,9 +115,9 @@ static int frameTimeMs = (1000 / DEFAULT_TARGET_FPS);  // ~28ms
 static uint32_t lastFrameTime = 0;
 static int useFrameCap = 1;    // Enabled by default (35 FPS)
 
-// Prefetch optimization - disabled by default (causes freezes with SIGIL)
-// Enable with -prefetch flag for other WADs
-static int usePrefetch = 0;
+// Prefetch optimization - enabled by default, auto-disabled for SIGIL (causes freezes)
+// Use -noprefetch to disable manually
+static int usePrefetch = 1;
 
 // framebuffer stuff 
 static uint8_t *fbPtr;
@@ -750,10 +750,25 @@ void DG_Init() {
 		printf("FPS debug logging enabled\n");
 	}
 
-	// Check for -prefetch to enable cache prefetch (disabled by default, freezes SIGIL)
-	if (M_CheckParm("-prefetch")) {
+	// Auto-detect SIGIL and disable prefetch (causes freezes)
+	// Check all args for "sigil" in PWAD files (case-insensitive)
+	for (int i = 1; i < myargc; i++) {
+		if (myargv[i] && (strstr(myargv[i], "sigil") != NULL || 
+		                  strstr(myargv[i], "SIGIL") != NULL ||
+		                  strstr(myargv[i], "Sigil") != NULL)) {
+			usePrefetch = 0;
+			printf("SIGIL detected - prefetch disabled (use -prefetch to force)\n");
+			break;
+		}
+	}
+	
+	// Manual override flags
+	if (M_CheckParm("-noprefetch")) {
+		usePrefetch = 0;
+		printf("Prefetch disabled\n");
+	} else if (M_CheckParm("-prefetch")) {
 		usePrefetch = 1;
-		printf("Prefetch optimization enabled\n");
+		printf("Prefetch enabled (forced)\n");
 	}
 
 	// Set up signal handlers for clean exit
