@@ -620,6 +620,20 @@ boolean D_InitNetGame(net_connect_data_t *connect_data)
             connect_data->drone = true;
         }
 
+        //!
+        // @arg <name>
+        // @category net
+        //
+        // Set the player name for multiplayer games.
+        //
+
+        i = M_CheckParmWithArgs("-name", 1);
+
+        if (i > 0)
+        {
+            net_player_name = myargv[i+1];
+        }
+
         if (!NET_CL_Connect(addr, connect_data))
         {
             I_Error("D_InitNetGame: Failed to connect to %s\n",
