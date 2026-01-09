@@ -107,12 +107,13 @@ static int fpsFd = -1;                 // File descriptor for FPS logging
 static int useFpsDebug = 0;            // If 1, enable FPS logging (disabled by default)
 #define FPS_UPDATE_INTERVAL_MS 1000  // Update FPS every second
 
-// Frame rate cap - match DOOM's native 35 tics/second (TICRATE)
-// This minimizes input latency while the display shows what it can (~20-25 FPS)
-#define TARGET_FPS 35
-#define FRAME_TIME_MS (1000 / TARGET_FPS)
+// Frame rate cap - default 35 FPS (DOOM's native TICRATE)
+// Configurable via -fps N (0 = uncapped, 20 = Pager display, 35 = DOOM native)
+#define DEFAULT_TARGET_FPS 35
+static int targetFps = DEFAULT_TARGET_FPS;
+static int frameTimeMs = (1000 / DEFAULT_TARGET_FPS);  // ~28ms
 static uint32_t lastFrameTime = 0;
-static int useFrameCap = 1;  // Enable by default, disable with -uncapped
+static int useFrameCap = 1;    // Enabled by default (35 FPS)
 
 // framebuffer stuff 
 static uint8_t *fbPtr;
@@ -608,12 +609,21 @@ void DG_Init() {
 		printf("VSync enabled (tear-free but slower)\n");
 	}
 
-	// Check for -uncapped to disable frame rate cap (default: capped at 35 FPS)
-	if (M_CheckParm("-uncapped")) {
-		useFrameCap = 0;
-		printf("Frame cap disabled (uncapped FPS)\n");
+	// Check for -fps N to override default frame rate cap
+	// Default: 35 FPS (DOOM native). Use -fps 0 for uncapped.
+	int fpsArg = M_CheckParmWithArgs("-fps", 1);
+	if (fpsArg) {
+		targetFps = atoi(myargv[fpsArg + 1]);
+		if (targetFps > 0) {
+			useFrameCap = 1;
+			frameTimeMs = 1000 / targetFps;
+			printf("Frame cap: %d FPS (%dms/frame)\n", targetFps, frameTimeMs);
+		} else {
+			useFrameCap = 0;
+			printf("Uncapped framerate\n");
+		}
 	} else {
-		printf("Frame pacing enabled (%d FPS target)\n", TARGET_FPS);
+		printf("Frame cap: %d FPS (default, use -fps N to change)\n", DEFAULT_TARGET_FPS);
 	}
 
 	// Check for -fpsdebug to enable FPS logging
@@ -791,8 +801,8 @@ void DG_DrawFrame() {
 	if (useFrameCap) {
 		uint32_t now = DG_GetTicksMs();
 		uint32_t elapsed = now - lastFrameTime;
-		if (elapsed < FRAME_TIME_MS) {
-			usleep((FRAME_TIME_MS - elapsed) * 1000);
+		if (elapsed < (uint32_t)frameTimeMs) {
+			usleep((frameTimeMs - elapsed) * 1000);
 		}
 		lastFrameTime = DG_GetTicksMs();
 	}
