@@ -944,9 +944,18 @@ void DG_DrawFrame() {
 				unsigned int srcX = srcXLookupAspect[y];
 				const unsigned int *yLookup = srcYLookupAspect;
 				
+				// Prefetch next row's lookup value for better cache behavior
+				if (y + 1 < aspectOutH) {
+					__builtin_prefetch(&srcXLookupAspect[y + 1], 0, 3);
+				}
+				
 				// Process 4 pixels at a time with direct palette lookup
 				unsigned int x = 0;
 				for (; x + 3 < aspectOutW; x += 4) {
+					// Prefetch source data ahead (16 pixels = 1 cache line on MIPS 24KEc)
+					if (x + 16 < aspectOutW) {
+						__builtin_prefetch(&srcBuf[yLookup[x+16] * DOOMGENERIC_RESX + srcX], 0, 0);
+					}
 					dst[x]   = palette[srcBuf[yLookup[x]   * DOOMGENERIC_RESX + srcX]];
 					dst[x+1] = palette[srcBuf[yLookup[x+1] * DOOMGENERIC_RESX + srcX]];
 					dst[x+2] = palette[srcBuf[yLookup[x+2] * DOOMGENERIC_RESX + srcX]];
@@ -965,9 +974,18 @@ void DG_DrawFrame() {
 				unsigned int srcX = srcXLookup[y];
 				const unsigned int *yLookup = srcYLookup;
 				
+				// Prefetch next row's lookup value
+				if (y + 1 < scaledOutH) {
+					__builtin_prefetch(&srcXLookup[y + 1], 0, 3);
+				}
+				
 				// Process 4 pixels at a time with direct palette lookup
 				unsigned int x = 0;
 				for (; x + 3 < scaledOutW; x += 4) {
+					// Prefetch source data ahead (16 pixels = 1 cache line on MIPS 24KEc)
+					if (x + 16 < scaledOutW) {
+						__builtin_prefetch(&srcBuf[yLookup[x+16] * DOOMGENERIC_RESX + srcX], 0, 0);
+					}
 					dst[x]   = palette[srcBuf[yLookup[x]   * DOOMGENERIC_RESX + srcX]];
 					dst[x+1] = palette[srcBuf[yLookup[x+1] * DOOMGENERIC_RESX + srcX]];
 					dst[x+2] = palette[srcBuf[yLookup[x+2] * DOOMGENERIC_RESX + srcX]];
