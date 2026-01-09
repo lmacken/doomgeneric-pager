@@ -171,7 +171,7 @@ static int dpadRightPressed = 0;
 // Track active combo key (to release when Green is released)
 static int comboKeyActive = 0;
 
-// Prefetch optimization - enabled by default, auto-disabled for SIGIL
+// Prefetch optimization - enabled by default, use -noprefetch to disable
 static int usePrefetch = 1;
 
 // XXX: HACK
@@ -644,24 +644,10 @@ void DG_Init() {
 		printf("VSync enabled (tear-free but slower)\n");
 	}
 	
-	// Auto-detect SIGIL and disable prefetch (causes freezes on that WAD)
-	for (int i = 1; i < myargc; i++) {
-		if (myargv[i] && (strstr(myargv[i], "sigil") || 
-		                  strstr(myargv[i], "SIGIL") ||
-		                  strstr(myargv[i], "Sigil"))) {
-			usePrefetch = 0;
-			printf("SIGIL detected - prefetch disabled\n");
-			break;
-		}
-	}
-	
-	// Manual prefetch control
+	// Prefetch control (enabled by default)
 	if (M_CheckParm("-noprefetch")) {
 		usePrefetch = 0;
 		printf("Prefetch disabled\n");
-	} else if (M_CheckParm("-prefetch")) {
-		usePrefetch = 1;
-		printf("Prefetch force-enabled\n");
 	}
 
 	// Set up signal handlers for clean exit
