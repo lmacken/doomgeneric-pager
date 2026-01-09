@@ -22,7 +22,6 @@
 #include "p_local.h"
 
 #include "doomstat.h"
-#include "i_timer.h"
 
 
 int	leveltime;
@@ -118,45 +117,6 @@ void P_RunThinkers (void)
 
 
 //
-// P_SaveOldPositions
-// [crispy] Save old positions before running the tic for interpolation
-//
-static void P_SaveOldPositions(void)
-{
-    int i;
-    thinker_t *th;
-    mobj_t *mo;
-    
-    if (!crispy_uncapped)
-        return;
-    
-    // Save player-specific view data
-    for (i = 0; i < MAXPLAYERS; i++)
-    {
-        if (playeringame[i] && players[i].mo)
-        {
-            players[i].prev_viewz = players[i].viewz;
-            players[i].prev_viewangle = players[i].mo->angle;
-        }
-    }
-    
-    // Save old positions for ALL mobjs (monsters, items, projectiles, players)
-    for (th = thinkercap.next; th != &thinkercap; th = th->next)
-    {
-        if (th->function.acp1 == (actionf_p1)P_MobjThinker)
-        {
-            mo = (mobj_t *)th;
-            mo->oldx = mo->x;
-            mo->oldy = mo->y;
-            mo->oldz = mo->z;
-            mo->oldangle = mo->angle;
-            mo->interp = 1;  // OK to interpolate
-        }
-    }
-}
-
-
-//
 // P_Ticker
 //
 
@@ -177,8 +137,6 @@ void P_Ticker (void)
 	return;
     }
     
-    // [crispy] Save old positions before running the tic
-    P_SaveOldPositions();
 		
     for (i=0 ; i<MAXPLAYERS ; i++)
 	if (playeringame[i])

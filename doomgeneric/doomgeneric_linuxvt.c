@@ -96,22 +96,23 @@ static inline void *aligned_alloc_cached(size_t size) {
 // timing stuff
 static struct timeval startTime;
 
-// FPS and timing tracking (disabled by default for performance)
-// Enable with -fpsdebug flag
+// FPS and timing tracking (writes to file, not stderr - stderr crashes SIGIL!)
 static uint32_t frameCount = 0;
 static uint32_t lastFpsTime = 0;
+static uint32_t currentFps = 0;
 static uint32_t totalWriteTimeMs = 0;  // Accumulated write() time
+static uint32_t avgWriteTimeMs = 0;    // Average write time per frame
 static int useVsync = 0;               // If 1, fsync after write (no tearing but ~10 FPS)
 static int fpsFd = -1;                 // File descriptor for FPS logging
-static int useFpsDebug = 0;            // Disabled by default
+static int useFpsDebug = 0;            // If 1, enable FPS logging (disabled by default)
 #define FPS_UPDATE_INTERVAL_MS 1000  // Update FPS every second
 
-// Frame pacing - cap at DOOM's native 35 tics/second
-// Saves CPU and provides consistent frame timing
+// Frame rate cap - match DOOM's native 35 tics/second (TICRATE)
+// This minimizes input latency while the display shows what it can (~20-25 FPS)
 #define TARGET_FPS 35
-#define FRAME_TIME_MS (1000 / TARGET_FPS)  // ~28ms per frame
+#define FRAME_TIME_MS (1000 / TARGET_FPS)
 static uint32_t lastFrameTime = 0;
-static int useFrameCap = 1;  // Enabled by default, disable with -uncapped
+static int useFrameCap = 1;  // Enable by default, disable with -uncapped
 
 // framebuffer stuff 
 static uint8_t *fbPtr;
@@ -607,18 +608,18 @@ void DG_Init() {
 		printf("VSync enabled (tear-free but slower)\n");
 	}
 
-	// Check for -uncapped to disable frame pacing (default: capped at 35 FPS)
+	// Check for -uncapped to disable frame rate cap (default: capped at 35 FPS)
 	if (M_CheckParm("-uncapped")) {
 		useFrameCap = 0;
 		printf("Frame cap disabled (uncapped FPS)\n");
 	} else {
-		printf("Frame pacing: %d FPS target\n", TARGET_FPS);
+		printf("Frame pacing enabled (%d FPS target)\n", TARGET_FPS);
 	}
 
-	// Check for -fpsdebug to enable FPS logging to /tmp/fps.log
+	// Check for -fpsdebug to enable FPS logging
 	if (M_CheckParm("-fpsdebug")) {
 		useFpsDebug = 1;
-		printf("FPS debug logging enabled (/tmp/fps.log)\n");
+		printf("FPS debug logging enabled\n");
 	}
 
 	// Set up signal handlers for clean exit
@@ -785,7 +786,8 @@ static inline uint16_t rgb32_to_rgb565(uint32_t pixel) {
 }
 
 void DG_DrawFrame() {
-	// Frame pacing - sleep to hit target FPS, saves CPU and provides consistent timing
+	// Frame rate cap - don't render faster than TARGET_FPS
+	// This provides consistent frame timing and reduces CPU usage
 	if (useFrameCap) {
 		uint32_t now = DG_GetTicksMs();
 		uint32_t elapsed = now - lastFrameTime;
@@ -854,16 +856,14 @@ void DG_DrawFrame() {
 			}
 		}
 		
-		// Write frame to display
-		uint32_t writeStart = useFpsDebug ? DG_GetTicksMs() : 0;
+		// Write frame to display (measure time)
+		uint32_t writeStart = DG_GetTicksMs();
 		lseek(fbFd, 0, SEEK_SET);
 		write(fbFd, renderBuffer, renderBufferSize);
 		if (useVsync) {
 			fsync(fbFd);  // Wait for SPI transfer (~95ms, ~10 FPS but no tearing)
 		}
-		if (useFpsDebug) {
-			totalWriteTimeMs += DG_GetTicksMs() - writeStart;
-		}
+		totalWriteTimeMs += DG_GetTicksMs() - writeStart;
 	} else {
 		// Original 32-bit mmap path
 		for (int line = 0; line < DOOMGENERIC_RESY; line++) {
@@ -875,14 +875,16 @@ void DG_DrawFrame() {
 		}
 	}
 
-	// FPS tracking - only if enabled with -fpsdebug (disabled by default for performance)
+	// FPS tracking - write to file (stderr causes SIGIL to crash!)
+	// Only enabled with -fpsdebug flag
 	if (useFpsDebug) {
 		frameCount++;
 		uint32_t now = DG_GetTicksMs();
 		if (now - lastFpsTime >= FPS_UPDATE_INTERVAL_MS) {
-			uint32_t currentFps = (frameCount * 1000) / (now - lastFpsTime);
-			uint32_t avgWriteTimeMs = frameCount > 0 ? totalWriteTimeMs / frameCount : 0;
+			currentFps = (frameCount * 1000) / (now - lastFpsTime);
+			avgWriteTimeMs = frameCount > 0 ? totalWriteTimeMs / frameCount : 0;
 			uint32_t displayFps = avgWriteTimeMs > 0 ? 1000 / avgWriteTimeMs : 0;
+			// Write to file instead of stderr
 			if (fpsFd < 0) {
 				fpsFd = open("/tmp/fps.log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
 			}

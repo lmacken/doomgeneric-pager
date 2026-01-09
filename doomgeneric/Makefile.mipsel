@@ -61,6 +61,8 @@ $(OUTPUT):	$(OBJS)
 	@echo [Linking $@]
 	$(VB)$(CC) $(CFLAGS) $(LDFLAGS) $(OBJS) \
 	-o $(OUTPUT) $(LIBS)
+	@echo [Stripping debug symbols]
+	$(VB)mipsel-linux-gnu-strip $(OUTPUT) 2>/dev/null || strip $(OUTPUT) 2>/dev/null || true
 	@echo [Size]
 	-@size $(OUTPUT) 2>/dev/null || true
 

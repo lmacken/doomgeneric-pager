@@ -1273,16 +1273,6 @@ void D_DoomMain (void)
     I_DisplayFPSDots(devparm);
 
     //!
-    // @category video
-    //
-    // Enable uncapped framerate with interpolation for smooth camera movement.
-    //
-
-    crispy_uncapped = M_CheckParm ("-uncapped");
-    if (crispy_uncapped)
-        printf("Uncapped framerate with interpolation enabled\n");
-
-    //!
     // @category net
     // @vanilla
     //

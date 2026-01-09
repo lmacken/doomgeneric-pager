@@ -42,8 +42,6 @@ extern fixed_t		sprtopscreen;
 extern fixed_t		pspritescale;
 extern fixed_t		pspriteiscale;
 
-// [crispy] interpolate weapon sprite bobbing
-extern boolean		pspr_interp;
 
 void R_DrawMaskedColumn (column_t* column);
 

@@ -124,8 +124,6 @@ EV_Teleport
 
 		thing->angle = m->angle;
 		thing->momx = thing->momy = thing->momz = 0;
-		// [crispy] don't interpolate after teleporting
-		thing->interp = 0;
 		return 1;
 	    }	
 	}
