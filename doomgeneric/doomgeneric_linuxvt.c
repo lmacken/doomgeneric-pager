@@ -104,20 +104,7 @@ static uint32_t totalWriteTimeMs = 0;  // Accumulated write() time
 static uint32_t avgWriteTimeMs = 0;    // Average write time per frame
 static int useVsync = 0;               // If 1, fsync after write (no tearing but ~10 FPS)
 static int fpsFd = -1;                 // File descriptor for FPS logging
-static int useFpsDebug = 0;            // If 1, enable FPS logging (disabled by default)
 #define FPS_UPDATE_INTERVAL_MS 1000  // Update FPS every second
-
-// Frame rate cap - default 35 FPS (DOOM's native TICRATE)
-// Configurable via -fps N (0 = uncapped, 20 = Pager display, 35 = DOOM native)
-#define DEFAULT_TARGET_FPS 35
-static int targetFps = DEFAULT_TARGET_FPS;
-static int frameTimeMs = (1000 / DEFAULT_TARGET_FPS);  // ~28ms
-static uint32_t lastFrameTime = 0;
-static int useFrameCap = 1;    // Enabled by default (35 FPS)
-
-// Prefetch optimization - enabled by default, auto-disabled for SIGIL (causes freezes)
-// Use -noprefetch to disable manually
-static int usePrefetch = 1;
 
 // framebuffer stuff 
 static uint8_t *fbPtr;
@@ -157,7 +144,6 @@ static void cleanup_and_exit(int sig) {
 	if (srcYLookup) free(srcYLookup);
 	if (srcXLookupAspect) free(srcXLookupAspect);
 	if (srcYLookupAspect) free(srcYLookupAspect);
-	if (fpsFd >= 0) close(fpsFd);
 	if (fbFd >= 0) close(fbFd);
 	_exit(sig ? 128 + sig : 0);
 }
@@ -182,11 +168,11 @@ static int dpadDownPressed = 0;
 static int dpadLeftPressed = 0;
 static int dpadRightPressed = 0;
 
-// Track which combo keys are currently held (to properly release them)
-static int comboStrafeLActive = 0;
-static int comboStrafeRActive = 0;
-static int comboUseActive = 0;
-static int comboMapActive = 0;
+// Track active combo key (to release when Green is released)
+static int comboKeyActive = 0;
+
+// Prefetch optimization - enabled by default, auto-disabled for SIGIL
+static int usePrefetch = 1;
 
 // XXX: HACK
 // Linux's evdev system doesn't make it feasible to just use
@@ -391,101 +377,45 @@ static void addKeyToQueue(int pressed, unsigned int keyCode) {
 	if (keyCode == 0x130) {  // Red button
 		redButtonPressed = pressed;
 	} else if (keyCode == 0x131) {  // Green button
-		int wasGreenPressed = greenButtonPressed;
+		int wasGreen = greenButtonPressed;
 		greenButtonPressed = pressed;
 		
-		// When Green is RELEASED, release any active combo keys
-		// If D-pad is still held, resume normal arrow key behavior
-		if (wasGreenPressed && !pressed) {
-			if (comboStrafeLActive) {
-				unsigned short releaseData = (0 << 8) | KEY_STRAFE_L;
-				s_KeyQueue[s_KeyQueueWriteIndex] = releaseData;
-				s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
-				comboStrafeLActive = 0;
-				// If D-pad still held, resume turning
-				if (dpadLeftPressed) {
-					unsigned short pressArrow = (1 << 8) | KEY_LEFTARROW;
-					s_KeyQueue[s_KeyQueueWriteIndex] = pressArrow;
-					s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
-				}
-			}
-			if (comboStrafeRActive) {
-				unsigned short releaseData = (0 << 8) | KEY_STRAFE_R;
-				s_KeyQueue[s_KeyQueueWriteIndex] = releaseData;
-				s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
-				comboStrafeRActive = 0;
-				if (dpadRightPressed) {
-					unsigned short pressArrow = (1 << 8) | KEY_RIGHTARROW;
-					s_KeyQueue[s_KeyQueueWriteIndex] = pressArrow;
-					s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
-				}
-			}
-			if (comboUseActive) {
-				unsigned short releaseData = (0 << 8) | KEY_USE;
-				s_KeyQueue[s_KeyQueueWriteIndex] = releaseData;
-				s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
-				comboUseActive = 0;
-				if (dpadUpPressed) {
-					unsigned short pressArrow = (1 << 8) | KEY_UPARROW;
-					s_KeyQueue[s_KeyQueueWriteIndex] = pressArrow;
-					s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
-				}
-			}
-			if (comboMapActive) {
-				unsigned short releaseData = (0 << 8) | DOOM_KEY_TAB;
-				s_KeyQueue[s_KeyQueueWriteIndex] = releaseData;
-				s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
-				comboMapActive = 0;
-				if (dpadDownPressed) {
-					unsigned short pressArrow = (1 << 8) | KEY_DOWNARROW;
-					s_KeyQueue[s_KeyQueueWriteIndex] = pressArrow;
-					s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
-				}
-			}
-		}
-		
-		// When Green is PRESSED, start combo for any D-pad already held
-		// This fixes the case where D-pad is pressed before Green
-		// We need to: 1) Release the normal arrow key, 2) Press the combo key
-		if (!wasGreenPressed && pressed) {
-			if (dpadLeftPressed && !comboStrafeLActive) {
-				// Release the normal left arrow first
-				unsigned short releaseArrow = (0 << 8) | KEY_LEFTARROW;
+		// When Green is PRESSED while D-pad already held, switch to strafe
+		if (!wasGreen && pressed) {
+			unsigned char comboKey = 0;
+			unsigned char arrowKey = 0;
+			if (dpadLeftPressed) { comboKey = KEY_STRAFE_L; arrowKey = KEY_LEFTARROW; }
+			else if (dpadRightPressed) { comboKey = KEY_STRAFE_R; arrowKey = KEY_RIGHTARROW; }
+			
+			if (comboKey) {
+				// Release arrow key first (stop turning)
+				unsigned short releaseArrow = (0 << 8) | arrowKey;
 				s_KeyQueue[s_KeyQueueWriteIndex] = releaseArrow;
 				s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
 				// Then press strafe
-				unsigned short pressData = (1 << 8) | KEY_STRAFE_L;
-				s_KeyQueue[s_KeyQueueWriteIndex] = pressData;
+				comboKeyActive = comboKey;
+				unsigned short pressCombo = (1 << 8) | comboKey;
+				s_KeyQueue[s_KeyQueueWriteIndex] = pressCombo;
 				s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
-				comboStrafeLActive = 1;
 			}
-			if (dpadRightPressed && !comboStrafeRActive) {
-				unsigned short releaseArrow = (0 << 8) | KEY_RIGHTARROW;
-				s_KeyQueue[s_KeyQueueWriteIndex] = releaseArrow;
+		}
+		
+		// When Green is RELEASED, release combo and resume arrow if D-pad held
+		if (wasGreen && !pressed && comboKeyActive) {
+			unsigned short releaseCombo = (0 << 8) | comboKeyActive;
+			s_KeyQueue[s_KeyQueueWriteIndex] = releaseCombo;
+			s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
+			
+			// Resume turning if D-pad still held
+			unsigned char arrowKey = 0;
+			if (dpadLeftPressed) arrowKey = KEY_LEFTARROW;
+			else if (dpadRightPressed) arrowKey = KEY_RIGHTARROW;
+			if (arrowKey) {
+				unsigned short pressArrow = (1 << 8) | arrowKey;
+				s_KeyQueue[s_KeyQueueWriteIndex] = pressArrow;
 				s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
-				unsigned short pressData = (1 << 8) | KEY_STRAFE_R;
-				s_KeyQueue[s_KeyQueueWriteIndex] = pressData;
-				s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
-				comboStrafeRActive = 1;
 			}
-			if (dpadUpPressed && !comboUseActive) {
-				unsigned short releaseArrow = (0 << 8) | KEY_UPARROW;
-				s_KeyQueue[s_KeyQueueWriteIndex] = releaseArrow;
-				s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
-				unsigned short pressData = (1 << 8) | KEY_USE;
-				s_KeyQueue[s_KeyQueueWriteIndex] = pressData;
-				s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
-				comboUseActive = 1;
-			}
-			if (dpadDownPressed && !comboMapActive) {
-				unsigned short releaseArrow = (0 << 8) | KEY_DOWNARROW;
-				s_KeyQueue[s_KeyQueueWriteIndex] = releaseArrow;
-				s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
-				unsigned short pressData = (1 << 8) | DOOM_KEY_TAB;
-				s_KeyQueue[s_KeyQueueWriteIndex] = pressData;
-				s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
-				comboMapActive = 1;
-			}
+			comboKeyActive = 0;
 		}
 	}
 	
@@ -499,29 +429,27 @@ static void addKeyToQueue(int pressed, unsigned int keyCode) {
 	if (redButtonPressed && greenButtonPressed && pressed) {
 		unsigned short escData = (1 << 8) | KEY_ESCAPE;
 		s_KeyQueue[s_KeyQueueWriteIndex] = escData;
-		s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
+		s_KeyQueueWriteIndex++;
+		s_KeyQueueWriteIndex %= KEYQUEUE_SIZE;
 		return;  // Don't also send the individual button
 	}
 	
-	// Green + D-pad combos (when green is held)
+	// Green + D-pad combos (when green is held and D-pad pressed)
 	if (greenButtonPressed && pressed) {
 		unsigned char comboKey = 0;
 		
 		if (keyCode == KEY_UP) {
-			comboKey = KEY_USE;
-			comboUseActive = 1;
+			comboKey = KEY_USE;  // Open doors/switches
 		} else if (keyCode == KEY_DOWN) {
-			comboKey = DOOM_KEY_TAB;
-			comboMapActive = 1;
+			comboKey = DOOM_KEY_TAB;  // Automap toggle
 		} else if (keyCode == KEY_LEFT) {
-			comboKey = KEY_STRAFE_L;
-			comboStrafeLActive = 1;
+			comboKey = KEY_STRAFE_L;  // Strafe left
 		} else if (keyCode == KEY_RIGHT) {
-			comboKey = KEY_STRAFE_R;
-			comboStrafeRActive = 1;
+			comboKey = KEY_STRAFE_R;  // Strafe right
 		}
 		
 		if (comboKey != 0) {
+			comboKeyActive = comboKey;
 			unsigned short comboData = (1 << 8) | comboKey;
 			s_KeyQueue[s_KeyQueueWriteIndex] = comboData;
 			s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
@@ -529,31 +457,20 @@ static void addKeyToQueue(int pressed, unsigned int keyCode) {
 		}
 	}
 	
-	// Handle D-pad release - release combo key if it was active
-	// This works regardless of whether Green is still held
-	if (!pressed) {
+	// Handle D-pad release while in combo mode
+	if (!pressed && comboKeyActive) {
 		unsigned char comboKey = 0;
-		int *comboActive = NULL;
 		
-		if (keyCode == KEY_UP && comboUseActive) {
-			comboKey = KEY_USE;
-			comboActive = &comboUseActive;
-		} else if (keyCode == KEY_DOWN && comboMapActive) {
-			comboKey = DOOM_KEY_TAB;
-			comboActive = &comboMapActive;
-		} else if (keyCode == KEY_LEFT && comboStrafeLActive) {
-			comboKey = KEY_STRAFE_L;
-			comboActive = &comboStrafeLActive;
-		} else if (keyCode == KEY_RIGHT && comboStrafeRActive) {
-			comboKey = KEY_STRAFE_R;
-			comboActive = &comboStrafeRActive;
-		}
+		if (keyCode == KEY_UP && comboKeyActive == KEY_USE) comboKey = KEY_USE;
+		else if (keyCode == KEY_DOWN && comboKeyActive == DOOM_KEY_TAB) comboKey = DOOM_KEY_TAB;
+		else if (keyCode == KEY_LEFT && comboKeyActive == KEY_STRAFE_L) comboKey = KEY_STRAFE_L;
+		else if (keyCode == KEY_RIGHT && comboKeyActive == KEY_STRAFE_R) comboKey = KEY_STRAFE_R;
 		
-		if (comboKey != 0 && comboActive != NULL) {
+		if (comboKey != 0) {
 			unsigned short comboData = (0 << 8) | comboKey;  // Release
 			s_KeyQueue[s_KeyQueueWriteIndex] = comboData;
 			s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
-			*comboActive = 0;
+			comboKeyActive = 0;
 			return;
 		}
 	}
@@ -726,49 +643,25 @@ void DG_Init() {
 		useVsync = 1;
 		printf("VSync enabled (tear-free but slower)\n");
 	}
-
-	// Check for -fps N to override default frame rate cap
-	// Default: 35 FPS (DOOM native). Use -fps 0 for uncapped.
-	int fpsArg = M_CheckParmWithArgs("-fps", 1);
-	if (fpsArg) {
-		targetFps = atoi(myargv[fpsArg + 1]);
-		if (targetFps > 0) {
-			useFrameCap = 1;
-			frameTimeMs = 1000 / targetFps;
-			printf("Frame cap: %d FPS (%dms/frame)\n", targetFps, frameTimeMs);
-		} else {
-			useFrameCap = 0;
-			printf("Uncapped framerate\n");
-		}
-	} else {
-		printf("Frame cap: %d FPS (default, use -fps N to change)\n", DEFAULT_TARGET_FPS);
-	}
-
-	// Check for -fpsdebug to enable FPS logging
-	if (M_CheckParm("-fpsdebug")) {
-		useFpsDebug = 1;
-		printf("FPS debug logging enabled\n");
-	}
-
-	// Auto-detect SIGIL and disable prefetch (causes freezes)
-	// Check all args for "sigil" in PWAD files (case-insensitive)
+	
+	// Auto-detect SIGIL and disable prefetch (causes freezes on that WAD)
 	for (int i = 1; i < myargc; i++) {
-		if (myargv[i] && (strstr(myargv[i], "sigil") != NULL || 
-		                  strstr(myargv[i], "SIGIL") != NULL ||
-		                  strstr(myargv[i], "Sigil") != NULL)) {
+		if (myargv[i] && (strstr(myargv[i], "sigil") || 
+		                  strstr(myargv[i], "SIGIL") ||
+		                  strstr(myargv[i], "Sigil"))) {
 			usePrefetch = 0;
-			printf("SIGIL detected - prefetch disabled (use -prefetch to force)\n");
+			printf("SIGIL detected - prefetch disabled\n");
 			break;
 		}
 	}
 	
-	// Manual override flags
+	// Manual prefetch control
 	if (M_CheckParm("-noprefetch")) {
 		usePrefetch = 0;
 		printf("Prefetch disabled\n");
 	} else if (M_CheckParm("-prefetch")) {
 		usePrefetch = 1;
-		printf("Prefetch enabled (forced)\n");
+		printf("Prefetch force-enabled\n");
 	}
 
 	// Set up signal handlers for clean exit
@@ -935,17 +828,6 @@ static inline uint16_t rgb32_to_rgb565(uint32_t pixel) {
 }
 
 void DG_DrawFrame() {
-	// Frame rate cap - don't render faster than TARGET_FPS
-	// This provides consistent frame timing and reduces CPU usage
-	if (useFrameCap) {
-		uint32_t now = DG_GetTicksMs();
-		uint32_t elapsed = now - lastFrameTime;
-		if (elapsed < (uint32_t)frameTimeMs) {
-			usleep((frameTimeMs - elapsed) * 1000);
-		}
-		lastFrameTime = DG_GetTicksMs();
-	}
-
 	if (fbIs16Bit) {
 		// OPTIMIZED 16-bit RGB565 path with 90° CCW rotation
 		// Uses precomputed palette lookup - reads directly from I_VideoBuffer (8-bit indexed)
@@ -969,7 +851,7 @@ void DG_DrawFrame() {
 				unsigned int srcX = srcXLookupAspect[y];
 				const unsigned int *yLookup = srcYLookupAspect;
 				
-				// Prefetch next row's lookup value for better cache behavior
+				// Prefetch next row's lookup value
 				if (usePrefetch && y + 1 < aspectOutH) {
 					__builtin_prefetch(&srcXLookupAspect[y + 1], 0, 3);
 				}
@@ -977,7 +859,7 @@ void DG_DrawFrame() {
 				// Process 4 pixels at a time with direct palette lookup
 				unsigned int x = 0;
 				for (; x + 3 < aspectOutW; x += 4) {
-					// Prefetch source data ahead (16 pixels = 1 cache line on MIPS 24KEc)
+					// Prefetch ahead in source buffer
 					if (usePrefetch && x + 16 < aspectOutW) {
 						__builtin_prefetch(&srcBuf[yLookup[x+16] * DOOMGENERIC_RESX + srcX], 0, 0);
 					}
@@ -1007,7 +889,7 @@ void DG_DrawFrame() {
 				// Process 4 pixels at a time with direct palette lookup
 				unsigned int x = 0;
 				for (; x + 3 < scaledOutW; x += 4) {
-					// Prefetch source data ahead (16 pixels = 1 cache line on MIPS 24KEc)
+					// Prefetch ahead in source buffer
 					if (usePrefetch && x + 16 < scaledOutW) {
 						__builtin_prefetch(&srcBuf[yLookup[x+16] * DOOMGENERIC_RESX + srcX], 0, 0);
 					}
@@ -1043,28 +925,25 @@ void DG_DrawFrame() {
 	}
 
 	// FPS tracking - write to file (stderr causes SIGIL to crash!)
-	// Only enabled with -fpsdebug flag
-	if (useFpsDebug) {
-		frameCount++;
-		uint32_t now = DG_GetTicksMs();
-		if (now - lastFpsTime >= FPS_UPDATE_INTERVAL_MS) {
-			currentFps = (frameCount * 1000) / (now - lastFpsTime);
-			avgWriteTimeMs = frameCount > 0 ? totalWriteTimeMs / frameCount : 0;
-			uint32_t displayFps = avgWriteTimeMs > 0 ? 1000 / avgWriteTimeMs : 0;
-			// Write to file instead of stderr
-			if (fpsFd < 0) {
-				fpsFd = open("/tmp/fps.log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
-			}
-			if (fpsFd >= 0) {
-				char buf[64];
-				int len = snprintf(buf, sizeof(buf), "FPS: %u | write: %ums | display: ~%u fps\n", 
-					currentFps, avgWriteTimeMs, displayFps);
-				write(fpsFd, buf, len);
-			}
-			frameCount = 0;
-			totalWriteTimeMs = 0;
-			lastFpsTime = now;
+	frameCount++;
+	uint32_t now = DG_GetTicksMs();
+	if (now - lastFpsTime >= FPS_UPDATE_INTERVAL_MS) {
+		currentFps = (frameCount * 1000) / (now - lastFpsTime);
+		avgWriteTimeMs = frameCount > 0 ? totalWriteTimeMs / frameCount : 0;
+		uint32_t displayFps = avgWriteTimeMs > 0 ? 1000 / avgWriteTimeMs : 0;
+		// Write to file instead of stderr - stderr causes crashes on intensive maps
+		if (fpsFd < 0) {
+			fpsFd = open("/tmp/fps.log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
 		}
+		if (fpsFd >= 0) {
+			char buf[64];
+			int len = snprintf(buf, sizeof(buf), "FPS: %u | write: %ums | display: ~%u fps\n", 
+				currentFps, avgWriteTimeMs, displayFps);
+			write(fpsFd, buf, len);
+		}
+		frameCount = 0;
+		totalWriteTimeMs = 0;
+		lastFpsTime = now;
 	}
 
 	checkKeys();
