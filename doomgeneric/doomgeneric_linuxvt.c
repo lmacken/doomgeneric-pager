@@ -178,6 +178,12 @@ static int dpadDownPressed = 0;
 static int dpadLeftPressed = 0;
 static int dpadRightPressed = 0;
 
+// Track which combo keys are currently held (to properly release them)
+static int comboStrafeLActive = 0;
+static int comboStrafeRActive = 0;
+static int comboUseActive = 0;
+static int comboMapActive = 0;
+
 // XXX: HACK
 // Linux's evdev system doesn't make it feasible to just use
 // tolower(key) like the existing conversions did, so we
@@ -381,7 +387,37 @@ static void addKeyToQueue(int pressed, unsigned int keyCode) {
 	if (keyCode == 0x130) {  // Red button
 		redButtonPressed = pressed;
 	} else if (keyCode == 0x131) {  // Green button
+		int wasGreenPressed = greenButtonPressed;
 		greenButtonPressed = pressed;
+		
+		// When Green is RELEASED, release any active combo keys
+		// This fixes the "stuck strafe" bug when Green is released before D-pad
+		if (wasGreenPressed && !pressed) {
+			if (comboStrafeLActive) {
+				unsigned short releaseData = (0 << 8) | KEY_STRAFE_L;
+				s_KeyQueue[s_KeyQueueWriteIndex] = releaseData;
+				s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
+				comboStrafeLActive = 0;
+			}
+			if (comboStrafeRActive) {
+				unsigned short releaseData = (0 << 8) | KEY_STRAFE_R;
+				s_KeyQueue[s_KeyQueueWriteIndex] = releaseData;
+				s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
+				comboStrafeRActive = 0;
+			}
+			if (comboUseActive) {
+				unsigned short releaseData = (0 << 8) | KEY_USE;
+				s_KeyQueue[s_KeyQueueWriteIndex] = releaseData;
+				s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
+				comboUseActive = 0;
+			}
+			if (comboMapActive) {
+				unsigned short releaseData = (0 << 8) | DOOM_KEY_TAB;
+				s_KeyQueue[s_KeyQueueWriteIndex] = releaseData;
+				s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
+				comboMapActive = 0;
+			}
+		}
 	}
 	
 	// Track D-pad states
@@ -394,8 +430,7 @@ static void addKeyToQueue(int pressed, unsigned int keyCode) {
 	if (redButtonPressed && greenButtonPressed && pressed) {
 		unsigned short escData = (1 << 8) | KEY_ESCAPE;
 		s_KeyQueue[s_KeyQueueWriteIndex] = escData;
-		s_KeyQueueWriteIndex++;
-		s_KeyQueueWriteIndex %= KEYQUEUE_SIZE;
+		s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
 		return;  // Don't also send the individual button
 	}
 	
@@ -404,38 +439,52 @@ static void addKeyToQueue(int pressed, unsigned int keyCode) {
 		unsigned char comboKey = 0;
 		
 		if (keyCode == KEY_UP) {
-			comboKey = KEY_USE;  // Open doors/switches (0xa2)
+			comboKey = KEY_USE;
+			comboUseActive = 1;
 		} else if (keyCode == KEY_DOWN) {
-			comboKey = DOOM_KEY_TAB;  // Automap toggle
+			comboKey = DOOM_KEY_TAB;
+			comboMapActive = 1;
 		} else if (keyCode == KEY_LEFT) {
-			comboKey = KEY_STRAFE_L;  // Strafe left (0xa0)
+			comboKey = KEY_STRAFE_L;
+			comboStrafeLActive = 1;
 		} else if (keyCode == KEY_RIGHT) {
-			comboKey = KEY_STRAFE_R;  // Strafe right (0xa1)
+			comboKey = KEY_STRAFE_R;
+			comboStrafeRActive = 1;
 		}
 		
 		if (comboKey != 0) {
 			unsigned short comboData = (1 << 8) | comboKey;
 			s_KeyQueue[s_KeyQueueWriteIndex] = comboData;
-			s_KeyQueueWriteIndex++;
-			s_KeyQueueWriteIndex %= KEYQUEUE_SIZE;
+			s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
 			return;  // Don't send the regular D-pad key
 		}
 	}
 	
-	// Handle key release for combo keys (need to release the combo key too)
-	if (greenButtonPressed && !pressed) {
+	// Handle D-pad release - release combo key if it was active
+	// This works regardless of whether Green is still held
+	if (!pressed) {
 		unsigned char comboKey = 0;
+		int *comboActive = NULL;
 		
-		if (keyCode == KEY_UP) comboKey = KEY_USE;
-		else if (keyCode == KEY_DOWN) comboKey = DOOM_KEY_TAB;
-		else if (keyCode == KEY_LEFT) comboKey = KEY_STRAFE_L;
-		else if (keyCode == KEY_RIGHT) comboKey = KEY_STRAFE_R;
+		if (keyCode == KEY_UP && comboUseActive) {
+			comboKey = KEY_USE;
+			comboActive = &comboUseActive;
+		} else if (keyCode == KEY_DOWN && comboMapActive) {
+			comboKey = DOOM_KEY_TAB;
+			comboActive = &comboMapActive;
+		} else if (keyCode == KEY_LEFT && comboStrafeLActive) {
+			comboKey = KEY_STRAFE_L;
+			comboActive = &comboStrafeLActive;
+		} else if (keyCode == KEY_RIGHT && comboStrafeRActive) {
+			comboKey = KEY_STRAFE_R;
+			comboActive = &comboStrafeRActive;
+		}
 		
-		if (comboKey != 0) {
+		if (comboKey != 0 && comboActive != NULL) {
 			unsigned short comboData = (0 << 8) | comboKey;  // Release
 			s_KeyQueue[s_KeyQueueWriteIndex] = comboData;
-			s_KeyQueueWriteIndex++;
-			s_KeyQueueWriteIndex %= KEYQUEUE_SIZE;
+			s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
+			*comboActive = 0;
 			return;
 		}
 	}
