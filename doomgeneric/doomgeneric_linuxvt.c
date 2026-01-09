@@ -115,6 +115,10 @@ static int frameTimeMs = (1000 / DEFAULT_TARGET_FPS);  // ~28ms
 static uint32_t lastFrameTime = 0;
 static int useFrameCap = 1;    // Enabled by default (35 FPS)
 
+// Prefetch optimization - disabled by default (causes freezes with SIGIL)
+// Enable with -prefetch flag for other WADs
+static int usePrefetch = 0;
+
 // framebuffer stuff 
 static uint8_t *fbPtr;
 // These are non-static so net_lobby.c can access them for lobby drawing
@@ -746,6 +750,12 @@ void DG_Init() {
 		printf("FPS debug logging enabled\n");
 	}
 
+	// Check for -prefetch to enable cache prefetch (disabled by default, freezes SIGIL)
+	if (M_CheckParm("-prefetch")) {
+		usePrefetch = 1;
+		printf("Prefetch optimization enabled\n");
+	}
+
 	// Set up signal handlers for clean exit
 	signal(SIGINT, cleanup_and_exit);
 	signal(SIGTERM, cleanup_and_exit);
@@ -945,7 +955,7 @@ void DG_DrawFrame() {
 				const unsigned int *yLookup = srcYLookupAspect;
 				
 				// Prefetch next row's lookup value for better cache behavior
-				if (y + 1 < aspectOutH) {
+				if (usePrefetch && y + 1 < aspectOutH) {
 					__builtin_prefetch(&srcXLookupAspect[y + 1], 0, 3);
 				}
 				
@@ -953,7 +963,7 @@ void DG_DrawFrame() {
 				unsigned int x = 0;
 				for (; x + 3 < aspectOutW; x += 4) {
 					// Prefetch source data ahead (16 pixels = 1 cache line on MIPS 24KEc)
-					if (x + 16 < aspectOutW) {
+					if (usePrefetch && x + 16 < aspectOutW) {
 						__builtin_prefetch(&srcBuf[yLookup[x+16] * DOOMGENERIC_RESX + srcX], 0, 0);
 					}
 					dst[x]   = palette[srcBuf[yLookup[x]   * DOOMGENERIC_RESX + srcX]];
@@ -975,7 +985,7 @@ void DG_DrawFrame() {
 				const unsigned int *yLookup = srcYLookup;
 				
 				// Prefetch next row's lookup value
-				if (y + 1 < scaledOutH) {
+				if (usePrefetch && y + 1 < scaledOutH) {
 					__builtin_prefetch(&srcXLookup[y + 1], 0, 3);
 				}
 				
@@ -983,7 +993,7 @@ void DG_DrawFrame() {
 				unsigned int x = 0;
 				for (; x + 3 < scaledOutW; x += 4) {
 					// Prefetch source data ahead (16 pixels = 1 cache line on MIPS 24KEc)
-					if (x + 16 < scaledOutW) {
+					if (usePrefetch && x + 16 < scaledOutW) {
 						__builtin_prefetch(&srcBuf[yLookup[x+16] * DOOMGENERIC_RESX + srcX], 0, 0);
 					}
 					dst[x]   = palette[srcBuf[yLookup[x]   * DOOMGENERIC_RESX + srcX]];
