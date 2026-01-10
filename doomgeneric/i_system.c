@@ -47,6 +47,7 @@
 #include "i_video.h"
 
 #include "i_system.h"
+#include "net_lobby.h"
 
 #include "w_wad.h"
 #include "z_zone.h"
@@ -246,6 +247,9 @@ void I_BindVariables(void)
 void I_Quit (void)
 {
     atexit_listentry_t *entry;
+
+    // Show "Exiting..." screen for better UX (Pager takes time to restart)
+    DG_DrawExiting();
 
     // Run through all exit functions
  
