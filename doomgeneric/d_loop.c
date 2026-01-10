@@ -576,6 +576,21 @@ boolean D_InitNetGame(net_connect_data_t *connect_data)
     else
     {
         //!
+        // @arg <name>
+        // @category net
+        //
+        // Set the player name for multiplayer games.
+        // Parse this early so it applies to all connection modes.
+        //
+
+        i = M_CheckParmWithArgs("-name", 1);
+
+        if (i > 0)
+        {
+            net_player_name = myargv[i+1];
+        }
+
+        //!
         // @category net
         //
         // Automatically search the local LAN for a multiplayer
@@ -774,20 +789,6 @@ boolean D_InitNetGame(net_connect_data_t *connect_data)
         if (M_CheckParm("-drone") > 0)
         {
             connect_data->drone = true;
-        }
-
-        //!
-        // @arg <name>
-        // @category net
-        //
-        // Set the player name for multiplayer games.
-        //
-
-        i = M_CheckParmWithArgs("-name", 1);
-
-        if (i > 0)
-        {
-            net_player_name = myargv[i+1];
         }
 
         if (!NET_CL_Connect(addr, connect_data))
