@@ -104,6 +104,7 @@ static uint32_t totalWriteTimeMs = 0;  // Accumulated write() time
 static uint32_t avgWriteTimeMs = 0;    // Average write time per frame
 static int useVsync = 0;               // If 1, fsync after write (no tearing but ~10 FPS)
 static int fpsFd = -1;                 // File descriptor for FPS logging
+static int useFpsDebug = 0;            // If 1, enable FPS logging (disabled by default)
 #define FPS_UPDATE_INTERVAL_MS 1000  // Update FPS every second
 
 // Frame rate cap - default 35 FPS (DOOM's native TICRATE)
@@ -152,6 +153,7 @@ static void cleanup_and_exit(int sig) {
 	if (srcYLookup) free(srcYLookup);
 	if (srcXLookupAspect) free(srcXLookupAspect);
 	if (srcYLookupAspect) free(srcYLookupAspect);
+	if (fpsFd >= 0) close(fpsFd);
 	if (fbFd >= 0) close(fbFd);
 	_exit(sig ? 128 + sig : 0);
 }
@@ -690,6 +692,12 @@ void DG_Init() {
 		printf("Frame cap: %d FPS (default, use -fps N to change)\n", DEFAULT_TARGET_FPS);
 	}
 
+	// Check for -fpsdebug to enable FPS logging
+	if (M_CheckParm("-fpsdebug")) {
+		useFpsDebug = 1;
+		printf("FPS debug logging enabled (/tmp/fps.log)\n");
+	}
+
 	// Set up signal handlers for clean exit
 	signal(SIGINT, cleanup_and_exit);
 	signal(SIGTERM, cleanup_and_exit);
@@ -961,26 +969,29 @@ void DG_DrawFrame() {
 		}
 	}
 
-	// FPS tracking - write to file (stderr causes SIGIL to crash!)
-	frameCount++;
-	uint32_t now = DG_GetTicksMs();
-	if (now - lastFpsTime >= FPS_UPDATE_INTERVAL_MS) {
-		currentFps = (frameCount * 1000) / (now - lastFpsTime);
-		avgWriteTimeMs = frameCount > 0 ? totalWriteTimeMs / frameCount : 0;
-		uint32_t displayFps = avgWriteTimeMs > 0 ? 1000 / avgWriteTimeMs : 0;
-		// Write to file instead of stderr - stderr causes crashes on intensive maps
-		if (fpsFd < 0) {
-			fpsFd = open("/tmp/fps.log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	// FPS tracking - only when -fpsdebug is enabled
+	// Writes to file (stderr causes SIGIL to crash!)
+	if (useFpsDebug) {
+		frameCount++;
+		uint32_t now = DG_GetTicksMs();
+		if (now - lastFpsTime >= FPS_UPDATE_INTERVAL_MS) {
+			currentFps = (frameCount * 1000) / (now - lastFpsTime);
+			avgWriteTimeMs = frameCount > 0 ? totalWriteTimeMs / frameCount : 0;
+			uint32_t displayFps = avgWriteTimeMs > 0 ? 1000 / avgWriteTimeMs : 0;
+			// Write to file instead of stderr - stderr causes crashes on intensive maps
+			if (fpsFd < 0) {
+				fpsFd = open("/tmp/fps.log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+			}
+			if (fpsFd >= 0) {
+				char buf[64];
+				int len = snprintf(buf, sizeof(buf), "FPS: %u | write: %ums | display: ~%u fps\n", 
+					currentFps, avgWriteTimeMs, displayFps);
+				write(fpsFd, buf, len);
+			}
+			frameCount = 0;
+			totalWriteTimeMs = 0;
+			lastFpsTime = now;
 		}
-		if (fpsFd >= 0) {
-			char buf[64];
-			int len = snprintf(buf, sizeof(buf), "FPS: %u | write: %ums | display: ~%u fps\n", 
-				currentFps, avgWriteTimeMs, displayFps);
-			write(fpsFd, buf, len);
-		}
-		frameCount = 0;
-		totalWriteTimeMs = 0;
-		lastFpsTime = now;
 	}
 
 	checkKeys();
