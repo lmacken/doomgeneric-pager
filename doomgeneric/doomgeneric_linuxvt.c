@@ -181,8 +181,9 @@ static int dpadRightPressed = 0;
 // Track active combo key (to release when Green is released)
 static int comboKeyActive = 0;
 
-// Prefetch optimization - disabled by default, use -prefetch to enable
-static int usePrefetch = 0;
+// Prefetch optimization - enabled by default for better cache performance
+// Use -noprefetch to disable if issues occur
+static int usePrefetch = 1;
 
 // XXX: HACK
 // Linux's evdev system doesn't make it feasible to just use
@@ -669,10 +670,10 @@ void DG_Init() {
 		printf("VSync enabled (tear-free but slower)\n");
 	}
 	
-	// Prefetch control (disabled by default, experimental)
-	if (M_CheckParm("-prefetch")) {
-		usePrefetch = 1;
-		printf("Prefetch enabled (experimental)\n");
+	// Prefetch control (enabled by default for better cache performance)
+	if (M_CheckParm("-noprefetch")) {
+		usePrefetch = 0;
+		printf("Prefetch disabled\n");
 	}
 
 	// Check for -fps N to override default frame rate cap
