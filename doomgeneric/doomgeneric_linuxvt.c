@@ -519,7 +519,14 @@ static void checkKeys() {
 	return;
 }
 
-// Check for lobby-specific input: returns 1=start, -1=quit, 0=nothing
+// Check for lobby-specific input:
+//   1  = GREEN (select/join)
+//  -1  = RED (back/quit)
+//   2  = UP (navigate up)
+//   3  = DOWN (navigate down)
+//   4  = LEFT (unused)
+//   5  = RIGHT (unused)
+//   0  = nothing
 // Pager buttons: 0x131 (305) = GREEN button, 0x130 (304) = RED button
 int DG_CheckLobbyInput(void)
 {
@@ -536,9 +543,17 @@ int DG_CheckLobbyInput(void)
 			if (ev.type == EV_KEY && ev.value == 1) {  // Key press
 				// Use exact codes: 0x131 = GREEN, 0x130 = RED
 				if (ev.code == 0x131 || ev.code == KEY_SPACE || ev.code == KEY_ENTER) {
-					result = 1;  // GREEN = Start game
+					result = 1;  // GREEN = Start/Select
 				} else if (ev.code == 0x130 || ev.code == KEY_ESC) {
-					result = -1; // RED = Quit
+					result = -1; // RED = Back/Quit
+				} else if (ev.code == KEY_UP) {
+					result = 2;  // UP = Navigate up
+				} else if (ev.code == KEY_DOWN) {
+					result = 3;  // DOWN = Navigate down
+				} else if (ev.code == KEY_LEFT) {
+					result = 4;  // LEFT
+				} else if (ev.code == KEY_RIGHT) {
+					result = 5;  // RIGHT
 				}
 			}
 		}

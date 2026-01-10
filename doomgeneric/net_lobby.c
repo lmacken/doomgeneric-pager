@@ -13,6 +13,7 @@
 
 #include "doomtype.h"
 #include "net_defs.h"
+#include "net_query.h"
 
 // Embedded 8x8 font (basic ASCII 32-127)
 // Simple monospace bitmap font for lobby text
@@ -255,12 +256,55 @@ static void lobby_flush(void)
     }
 }
 
+// Draw loading screen with real-time info
+void DG_DrawLoadingBrowser(const char *message)
+{
+    lobby_clear(0x0841);  // Very dark gray background
+    
+    // Title bar
+    lobby_fill_rect(0, 0, LOBBY_WIDTH, 24, RGB565_DOOM_RED);
+    lobby_draw_centered(8, "DOOM DEATHMATCH", RGB565_WHITE);
+    
+    // Message centered on screen
+    if (message) {
+        lobby_draw_centered(100, message, RGB565_YELLOW);
+    }
+    
+    lobby_flush();
+}
+
+// Draw loading screen for auto-match with real-time progress
+void DG_DrawLoadingAutoMatch(int servers_found, int ports_scanned)
+{
+    char buf[64];
+    
+    lobby_clear(0x0841);  // Very dark gray
+    
+    // Title bar
+    lobby_fill_rect(0, 0, LOBBY_WIDTH, 24, RGB565_DOOM_RED);
+    lobby_draw_centered(8, "DOOM DEATHMATCH", RGB565_WHITE);
+    
+    // Scanning status
+    lobby_draw_centered(70, "SCANNING FOR SERVERS", RGB565_YELLOW);
+    
+    // Real-time stats
+    snprintf(buf, sizeof(buf), "Port: %d", DEFAULT_BASE_PORT + ports_scanned - 1);
+    lobby_draw_centered(100, buf, RGB565_CYAN);
+    
+    snprintf(buf, sizeof(buf), "Found: %d server%s", 
+             servers_found, servers_found == 1 ? "" : "s");
+    lobby_draw_centered(130, buf, servers_found > 0 ? RGB565_GREEN : RGB565_WHITE);
+    
+    lobby_flush();
+}
+
 // Main lobby drawing function - called from NET_WaitForLaunch
 // Uses virtual 480x222 coordinate system (rotated 90° CW to physical 222x480)
 void DG_DrawLobby(int num_players, int max_players, int is_controller, 
                   const char player_names[NET_MAXPLAYERS][MAXPLAYERNAME],
                   const char player_addrs[NET_MAXPLAYERS][MAXPLAYERNAME],
-                  int consoleplayer)
+                  int consoleplayer,
+                  const char *server_addr)
 {
     char buf[80];
     int y = 15;
@@ -270,48 +314,42 @@ void DG_DrawLobby(int num_players, int max_players, int is_controller,
     
     // Title with red accent box (full width of virtual screen)
     lobby_fill_rect(0, 5, LOBBY_WIDTH, 35, RGB565_DOOM_RED);
-    lobby_draw_centered(10, "DOOM DEATHMATCH", RGB565_WHITE);
-    lobby_draw_centered(22, "MULTIPLAYER LOBBY", RGB565_YELLOW);
+    lobby_draw_centered(10, "DOOM DEATHMATCH LOBBY", RGB565_WHITE);
     
-    y = 50;
+    // Show server address (so users can share with friends)
+    if (server_addr && server_addr[0]) {
+        snprintf(buf, sizeof(buf), "%s", server_addr);
+        lobby_draw_centered(22, buf, RGB565_CYAN);
+    }
+    
+    y = 48;
     
     // Player count
     snprintf(buf, sizeof(buf), "Players: %d / %d", num_players, max_players);
     lobby_draw_centered(y, buf, RGB565_WHITE);
-    y += 16;
+    y += 14;
     
     // Separator line
-    lobby_fill_rect(50, y, LOBBY_WIDTH - 100, 2, RGB565_CYAN);
-    y += 10;
+    lobby_fill_rect(30, y, LOBBY_WIDTH - 60, 2, RGB565_CYAN);
+    y += 8;
     
-    // Player list with names and addresses
-    for (int i = 0; i < num_players && i < max_players; i++) {
-        uint16_t color = (i == consoleplayer) ? RGB565_YELLOW : RGB565_GREEN;
-        const char *name = player_names[i][0] ? player_names[i] : "Player";
-        const char *addr = player_addrs[i][0] ? player_addrs[i] : "";
-        
-        // Show player number, name, and marker if it's us
-        if (i == consoleplayer) {
-            snprintf(buf, sizeof(buf), "%d. %s (YOU)", i + 1, name);
+    // Player list (max 4 players in DOOM deathmatch)
+    for (int i = 0; i < max_players && i < 4; i++) {
+        if (i < num_players) {
+            uint16_t color = (i == consoleplayer) ? RGB565_YELLOW : RGB565_GREEN;
+            const char *name = player_names[i][0] ? player_names[i] : "Player";
+            
+            if (i == consoleplayer) {
+                snprintf(buf, sizeof(buf), "%d. %s (YOU)", i + 1, name);
+            } else {
+                snprintf(buf, sizeof(buf), "%d. %s", i + 1, name);
+            }
+            lobby_draw_centered(y, buf, color);
         } else {
-            snprintf(buf, sizeof(buf), "%d. %s", i + 1, name);
+            snprintf(buf, sizeof(buf), "%d. ---", i + 1);
+            lobby_draw_centered(y, buf, 0x4208);  // Gray
         }
-        lobby_draw_string(40, y, buf, color);
-        y += 12;
-        
-        // Show address on second line (smaller indent)
-        if (addr[0]) {
-            snprintf(buf, sizeof(buf), "   %s", addr);
-            lobby_draw_string(40, y, buf, 0x8410);  // Dim gray
-        }
-        y += 14;
-    }
-    
-    // Empty slots
-    for (int i = num_players; i < max_players; i++) {
-        snprintf(buf, sizeof(buf), "%d. (waiting...)", i + 1);
-        lobby_draw_string(40, y, buf, 0x4208);  // Gray
-        y += 26;  // Same spacing as filled slots
+        y += 20;
     }
     
     // Instructions at bottom
@@ -322,6 +360,8 @@ void DG_DrawLobby(int num_players, int max_players, int is_controller,
     } else {
         lobby_draw_centered(y, "Waiting for host...", RGB565_YELLOW);
     }
+    y += 12;
+    lobby_draw_centered(y, "RED = Quit", RGB565_RED);
     
     // Flush to screen
     lobby_flush();
@@ -329,4 +369,338 @@ void DG_DrawLobby(int num_players, int max_players, int is_controller,
 
 // DG_CheckLobbyInput is defined in doomgeneric_linuxvt.c
 // (has access to input file descriptors)
+
+//=============================================================================
+// SERVER BROWSER UI
+//=============================================================================
+
+#include "net_query.h"
+#include "i_timer.h"
+
+// Browser state
+static int browser_selection = 0;
+static int browser_scroll = 0;
+static boolean browser_querying = false;
+static unsigned int browser_last_query = 0;
+static unsigned int browser_last_refresh = 0;
+
+// Number of servers visible at once
+#define BROWSER_VISIBLE_SERVERS 4
+
+// Auto-refresh interval (milliseconds)
+#define BROWSER_AUTO_REFRESH_MS 10000
+
+// Browser state enum
+typedef enum {
+    BROWSER_STATE_IDLE,
+    BROWSER_STATE_QUERYING,
+    BROWSER_STATE_READY,
+    BROWSER_STATE_CONNECTING,
+} browser_state_t;
+
+static browser_state_t browser_state = BROWSER_STATE_IDLE;
+
+// Initialize browser
+void DG_Browser_Init(void)
+{
+    browser_selection = 0;
+    browser_scroll = 0;
+    browser_state = BROWSER_STATE_IDLE;
+    browser_last_refresh = 0;
+    
+    // Show loading screen
+    DG_DrawLoadingBrowser("INITIALIZING...");
+    
+    // Initialize query system
+    NET_Query_Init();
+}
+
+// Start querying servers (includes auto-discovery)
+void DG_Browser_Refresh(void)
+{
+    browser_state = BROWSER_STATE_QUERYING;
+    browser_querying = true;
+    browser_last_query = I_GetTimeMS();
+    
+    // Show loading screen before discovery
+    DG_DrawLoadingBrowser("SCANNING FOR SERVERS...");
+    
+    // NET_Query_StartAll will auto-discover servers if none are configured
+    NET_Query_StartAll();
+}
+
+// Update browser state (call every frame)
+void DG_Browser_Update(void)
+{
+    unsigned int now = I_GetTimeMS();
+    
+    if (browser_querying)
+    {
+        if (NET_Query_Poll())
+        {
+            browser_querying = false;
+            browser_state = BROWSER_STATE_READY;
+            browser_last_refresh = now;
+        }
+    }
+    else if (browser_state == BROWSER_STATE_READY)
+    {
+        // Auto-refresh every 10 seconds
+        if (now - browser_last_refresh >= BROWSER_AUTO_REFRESH_MS)
+        {
+            DG_Browser_Refresh();
+        }
+    }
+}
+
+// Move selection up
+void DG_Browser_SelectUp(void)
+{
+    if (browser_selection > 0)
+    {
+        browser_selection--;
+        if (browser_selection < browser_scroll)
+            browser_scroll = browser_selection;
+    }
+}
+
+// Move selection down
+void DG_Browser_SelectDown(void)
+{
+    int count = NET_Query_GetServerCount();
+    if (browser_selection < count - 1)
+    {
+        browser_selection++;
+        if (browser_selection >= browser_scroll + BROWSER_VISIBLE_SERVERS)
+            browser_scroll = browser_selection - BROWSER_VISIBLE_SERVERS + 1;
+    }
+}
+
+// Get selected server address
+const char *DG_Browser_GetSelectedAddress(void)
+{
+    return NET_Query_GetServerAddress(browser_selection);
+}
+
+// Get auto-matched server address
+const char *DG_Browser_GetAutoMatchAddress(void)
+{
+    int best = NET_Query_FindBestServer();
+    if (best >= 0)
+        return NET_Query_GetServerAddress(best);
+    return NULL;
+}
+
+// Draw the server browser screen
+void DG_DrawBrowser(void)
+{
+    char buf[80];
+    int y = 5;
+    int server_count = NET_Query_GetServerCount();
+    
+    // Clear to dark background
+    lobby_clear(0x1082);  // Dark gray-blue
+    
+    // Title bar
+    lobby_fill_rect(0, 0, LOBBY_WIDTH, 28, RGB565_DOOM_RED);
+    lobby_draw_centered(5, "DOOM SERVER BROWSER", RGB565_WHITE);
+    lobby_draw_centered(16, "Select a server to join", RGB565_YELLOW);
+    
+    y = 35;
+    
+    // Status line
+    if (browser_state == BROWSER_STATE_QUERYING)
+    {
+        if (server_count == 0)
+        {
+            lobby_draw_centered(y, "Discovering servers...", RGB565_CYAN);
+        }
+        else
+        {
+            lobby_draw_centered(y, "Refreshing...", RGB565_CYAN);
+        }
+    }
+    else
+    {
+        snprintf(buf, sizeof(buf), "%d servers found", server_count);
+        lobby_draw_centered(y, buf, RGB565_WHITE);
+    }
+    y += 14;
+    
+    // Separator
+    lobby_fill_rect(20, y, LOBBY_WIDTH - 40, 1, RGB565_CYAN);
+    y += 6;
+    
+    // Server list
+    int list_start_y = y;
+    
+    for (int i = 0; i < BROWSER_VISIBLE_SERVERS && (i + browser_scroll) < server_count; i++)
+    {
+        int server_idx = i + browser_scroll;
+        boolean is_selected = (server_idx == browser_selection);
+        
+        net_querydata_t data;
+        char address[64];
+        unsigned int ping;
+        
+        // Draw selection highlight
+        if (is_selected)
+        {
+            lobby_fill_rect(5, y - 2, LOBBY_WIDTH - 10, 36, 0x3186);  // Brighter highlight
+            lobby_draw_string(8, y, ">", RGB565_YELLOW);  // Selection arrow
+        }
+        
+        // Get server info
+        if (NET_Query_GetServerInfo(server_idx, &data, address, sizeof(address), &ping))
+        {
+            // Server name (or address if no name)
+            const char *name = data.description[0] ? data.description : address;
+            uint16_t name_color = is_selected ? RGB565_YELLOW : RGB565_WHITE;
+            snprintf(buf, sizeof(buf), "%d. %s", server_idx + 1, name);
+            lobby_draw_string(20, y, buf, name_color);
+            y += 10;
+            
+            // Status line: players, state, ping
+            const char *state_str;
+            uint16_t state_color;
+            
+            if (data.server_state == 0)  // Waiting
+            {
+                if (data.num_players >= data.max_players)
+                {
+                    state_str = "FULL";
+                    state_color = RGB565_RED;
+                }
+                else if (data.num_players > 0)
+                {
+                    state_str = "WAITING";
+                    state_color = RGB565_GREEN;
+                }
+                else
+                {
+                    state_str = "EMPTY";
+                    state_color = RGB565_CYAN;
+                }
+            }
+            else  // In game
+            {
+                state_str = "IN GAME";
+                state_color = RGB565_ORANGE;
+            }
+            
+            snprintf(buf, sizeof(buf), "   %d/%d players - %s - %dms",
+                     data.num_players, data.max_players, state_str, ping);
+            lobby_draw_string(20, y, buf, state_color);
+            y += 10;
+            
+            // Server address (so users can share with PC friends)
+            snprintf(buf, sizeof(buf), "   %s", address);
+            lobby_draw_string(20, y, buf, 0x6B4D);  // Gray
+            y += 16;
+        }
+        else
+        {
+            // No response from this server
+            uint16_t color = is_selected ? RGB565_YELLOW : 0x8410;
+            snprintf(buf, sizeof(buf), "%d. %s", server_idx + 1, 
+                     NET_Query_GetServerAddress(server_idx));
+            lobby_draw_string(20, y, buf, color);
+            y += 10;
+            
+            lobby_draw_string(20, y, "   No response (offline?)", RGB565_RED);
+            y += 26;
+        }
+    }
+    
+    // Scroll indicators
+    if (browser_scroll > 0)
+    {
+        lobby_draw_string(LOBBY_WIDTH - 30, list_start_y, "^", RGB565_WHITE);
+    }
+    if (browser_scroll + BROWSER_VISIBLE_SERVERS < server_count)
+    {
+        lobby_draw_string(LOBBY_WIDTH - 30, list_start_y + (BROWSER_VISIBLE_SERVERS * 36) - 10, 
+                          "v", RGB565_WHITE);
+    }
+    
+    // Instructions at bottom
+    y = LOBBY_HEIGHT - 32;
+    lobby_fill_rect(0, y - 4, LOBBY_WIDTH, 40, 0x1082);
+    // Draw instructions with RED colored red
+    lobby_draw_string(60, y, "UP/DOWN: Select  GREEN: Join  ", RGB565_GREEN);
+    lobby_draw_string(300, y, "RED", RGB565_RED);
+    lobby_draw_string(324, y, ": Quit", RGB565_GREEN);
+    y += 12;
+    
+    // Show auto-refresh countdown
+    if (browser_state == BROWSER_STATE_READY && browser_last_refresh > 0)
+    {
+        unsigned int elapsed = I_GetTimeMS() - browser_last_refresh;
+        unsigned int remaining = (BROWSER_AUTO_REFRESH_MS - elapsed) / 1000;
+        if (remaining > 10) remaining = 10;
+        char refresh_buf[32];
+        snprintf(refresh_buf, sizeof(refresh_buf), "Auto-refresh in %ds", remaining);
+        lobby_draw_centered(y, refresh_buf, 0x8410);
+    }
+    else
+    {
+        lobby_draw_centered(y, "Auto-refresh: 10s", 0x8410);
+    }
+    
+    // Flush to screen
+    lobby_flush();
+}
+
+// Draw "Connecting..." screen
+void DG_DrawConnecting(const char *server_addr)
+{
+    char buf[80];
+    
+    lobby_clear(0x1082);
+    lobby_fill_rect(0, 80, LOBBY_WIDTH, 60, RGB565_DOOM_RED);
+    lobby_draw_centered(90, "CONNECTING...", RGB565_WHITE);
+    snprintf(buf, sizeof(buf), "%s", server_addr ? server_addr : "...");
+    lobby_draw_centered(110, buf, RGB565_YELLOW);
+    lobby_flush();
+}
+
+// Draw "Auto-matching..." screen  
+void DG_DrawAutoMatch(void)
+{
+    lobby_clear(0x1082);
+    
+    lobby_fill_rect(0, 50, LOBBY_WIDTH, 120, RGB565_DOOM_RED);
+    lobby_draw_centered(55, "AUTO-MATCHMAKING", RGB565_WHITE);
+    lobby_draw_centered(75, "Discovering servers...", RGB565_YELLOW);
+    
+    lobby_draw_centered(100, "Scanning ports for active servers", RGB565_CYAN);
+    
+    lobby_flush();
+}
+
+// Draw "No servers available" screen
+void DG_DrawNoServers(void)
+{
+    lobby_clear(0x1082);
+    
+    lobby_fill_rect(0, 70, LOBBY_WIDTH, 80, RGB565_DOOM_RED);
+    lobby_draw_centered(80, "NO SERVERS AVAILABLE", RGB565_WHITE);
+    lobby_draw_centered(100, "All servers are offline,", RGB565_YELLOW);
+    lobby_draw_centered(115, "full, or in-game", RGB565_YELLOW);
+    
+    lobby_draw_centered(160, "GREEN: Try again   RED: Exit", RGB565_CYAN);
+    
+    lobby_flush();
+}
+
+// Draw "Exiting..." screen
+void DG_DrawExiting(void)
+{
+    lobby_clear(0x0000);  // Black background
+    
+    lobby_fill_rect(0, 90, LOBBY_WIDTH, 40, RGB565_DOOM_RED);
+    lobby_draw_centered(100, "EXITING...", RGB565_WHITE);
+    
+    lobby_flush();
+}
 

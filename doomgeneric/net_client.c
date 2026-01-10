@@ -960,16 +960,13 @@ void NET_BindVariables(void)
     // Could bind config variables here
 }
 
-// External lobby functions (from net_lobby.c and doomgeneric_linuxvt.c)
-extern void DG_DrawLobby(int num_players, int max_players, int is_controller,
-                         const char player_names[NET_MAXPLAYERS][MAXPLAYERNAME],
-                         const char player_addrs[NET_MAXPLAYERS][MAXPLAYERNAME],
-                         int consoleplayer);
-extern int DG_CheckLobbyInput(void);  // Returns 1=start, -1=quit, 0=nothing
+// Lobby UI functions
+#include "net_lobby.h"
 
 // NET_WaitForLaunch - Wait for LAUNCH signal in the lobby
 // Does NOT send GAMESTART - that happens in D_StartNetGame
-void NET_WaitForLaunch(void)
+// Returns: true = game launched, false = user quit to browser
+boolean NET_WaitForLaunch(void)
 {
     int last_num_players = -1;
     int lobby_update_timer = 0;
@@ -983,6 +980,15 @@ void NET_WaitForLaunch(void)
     {
         NET_CL_Run();
         
+        // Check for input FIRST (always, even before we have wait data)
+        input = DG_CheckLobbyInput();
+        if (input == -1) {
+            // Red button - quit lobby and go back to browser
+            fprintf(stderr, "NET_WaitForLaunch: User quit lobby (RED button)\n");
+            NET_CL_Disconnect();
+            return false;
+        }
+        
         // Update lobby display periodically or when player count changes
         if (net_client_received_wait_data) {
             if (net_client_wait_data.num_players != last_num_players || lobby_update_timer <= 0) {
@@ -991,14 +997,13 @@ void NET_WaitForLaunch(void)
                             net_client_wait_data.is_controller,
                             net_client_wait_data.player_names,
                             net_client_wait_data.player_addrs,
-                            net_client_wait_data.consoleplayer);
+                            net_client_wait_data.consoleplayer,
+                            NET_AddrToString(server_addr));
                 last_num_players = net_client_wait_data.num_players;
                 lobby_update_timer = 20;  // Update every ~1 second
             }
             lobby_update_timer--;
             
-            // Check for input (Green button to start if controller)
-            input = DG_CheckLobbyInput();
             if (input == 1 && net_client_wait_data.is_controller) {
                 // Controller pressed start (Green button)
                 fprintf(stderr, "NET_WaitForLaunch: Controller starting game!\n");
@@ -1010,6 +1015,7 @@ void NET_WaitForLaunch(void)
     }
     
     fprintf(stderr, "NET_WaitForLaunch: Got LAUNCH signal, returning to game init...\n");
+    return true;
 }
 
 // NET_CL_SendStartAndWait - Send GAMESTART and wait for server response

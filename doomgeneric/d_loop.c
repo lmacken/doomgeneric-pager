@@ -44,6 +44,9 @@
 extern net_gamesettings_t received_settings;
 extern boolean received_settings_valid;
 
+// Server browser and lobby UI
+#include "net_lobby.h"
+
 // The complete set of data for a particular tic.
 
 typedef struct
@@ -592,6 +595,159 @@ boolean D_InitNetGame(net_connect_data_t *connect_data)
         }
 
         //!
+        // @category net
+        //
+        // Show server browser UI to select a server to join.
+        //
+
+        i = M_CheckParm("-browse");
+
+        if (i > 0)
+        {
+            const char *selected_addr = NULL;
+            int input;
+            boolean stay_in_browser = true;
+            
+            printf("Starting server browser...\n");
+            
+            // Initialize browser once
+            DG_Browser_Init();
+            
+            // Main browser loop - returns here if user quits lobby
+            while (stay_in_browser)
+            {
+                selected_addr = NULL;
+                addr = NULL;
+                
+                DG_Browser_Refresh();
+                
+                // Browser selection loop
+                while (1)
+                {
+                    DG_Browser_Update();
+                    DG_DrawBrowser();
+                    
+                    input = DG_CheckLobbyInput();
+                    
+                    if (input == 1)  // Green button - select/join
+                    {
+                        selected_addr = DG_Browser_GetSelectedAddress();
+                        if (selected_addr != NULL)
+                        {
+                            printf("Selected server: %s\n", selected_addr);
+                            DG_DrawConnecting(selected_addr);
+                            break;
+                        }
+                    }
+                    else if (input == -1)  // Red button - exit game
+                    {
+                        printf("Browser cancelled\n");
+                        DG_DrawExiting();
+                        I_Quit();
+                    }
+                    else if (input == 2)  // Up
+                    {
+                        DG_Browser_SelectUp();
+                    }
+                    else if (input == 3)  // Down
+                    {
+                        DG_Browser_SelectDown();
+                    }
+                    
+                    I_Sleep(16);  // ~60fps
+                }
+                
+                if (selected_addr != NULL)
+                {
+                    net_socket_module.InitClient();
+                    addr = net_socket_module.ResolveAddress((char *)selected_addr);
+                    
+                    if (addr == NULL)
+                    {
+                        printf("Unable to resolve '%s', returning to browser\n", selected_addr);
+                        continue;  // Back to browser
+                    }
+                    
+                    // Try to connect
+                    if (!NET_CL_Connect(addr, connect_data))
+                    {
+                        printf("Failed to connect to %s, returning to browser\n", selected_addr);
+                        continue;  // Back to browser
+                    }
+                    
+                    printf("Connected to %s, entering lobby...\n", NET_AddrToString(addr));
+                    
+                    // Wait in lobby - returns false if user presses RED to quit
+                    if (NET_WaitForLaunch())
+                    {
+                        // Game is starting!
+                        stay_in_browser = false;
+                        result = true;
+                    }
+                    else
+                    {
+                        // User quit lobby - go back to browser
+                        printf("Returning to server browser...\n");
+                        // Connection already closed by NET_WaitForLaunch
+                        // Reset query system so it reinitializes the socket
+                        NET_Query_Shutdown();
+                    }
+                }
+            }
+            
+            // Skip the normal connect/wait flow below since we handled it
+            return result;
+        }
+
+        //!
+        // @category net
+        //
+        // Automatically find and join the best available server.
+        // Uses smart matching to prefer servers with 1-2 players waiting.
+        //
+
+        i = M_CheckParm("-automatch");
+
+        if (i > 0)
+        {
+            const char *best_addr = NULL;
+            
+            printf("Starting auto-matchmaking...\n");
+            DG_DrawAutoMatch();
+            
+            // Initialize and query servers
+            NET_Query_Init();
+            NET_Query_RunAll();  // Blocking query
+            
+            // Find best server
+            best_addr = DG_Browser_GetAutoMatchAddress();
+            
+            if (best_addr == NULL)
+            {
+                printf("No suitable server found!\n");
+                DG_DrawNoServers();
+                
+                // Wait for input then exit
+                while (DG_CheckLobbyInput() == 0)
+                {
+                    I_Sleep(50);
+                }
+                I_Quit();
+            }
+            
+            printf("Auto-matched to: %s\n", best_addr);
+            DG_DrawConnecting(best_addr);
+            
+            net_socket_module.InitClient();
+            addr = net_socket_module.ResolveAddress((char *)best_addr);
+            
+            if (addr == NULL)
+            {
+                I_Error("Unable to resolve '%s'\n", best_addr);
+            }
+        }
+
+        //!
         // @arg <address>
         // @category net
         //
@@ -643,10 +799,17 @@ boolean D_InitNetGame(net_connect_data_t *connect_data)
         printf("D_InitNetGame: Connected to %s\n", NET_AddrToString(addr));
 
         // Wait for launch message received from server.
+        // Returns false if user quit the lobby with RED button.
 
-        NET_WaitForLaunch();
-
-        result = true;
+        if (NET_WaitForLaunch())
+        {
+            result = true;
+        }
+        else
+        {
+            printf("D_InitNetGame: User quit lobby, exiting.\n");
+            I_Quit();
+        }
     }
 #endif
 

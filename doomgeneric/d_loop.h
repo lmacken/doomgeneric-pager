@@ -81,7 +81,7 @@ extern int gametic, ticdup;
 void D_ReceiveTic(ticcmd_t *ticcmds, boolean *players_mask);
 
 // Wait for game launch signal
-void NET_WaitForLaunch(void);
+boolean NET_WaitForLaunch(void);
 
 // LAN server discovery
 net_addr_t *NET_FindLANServer(void);
