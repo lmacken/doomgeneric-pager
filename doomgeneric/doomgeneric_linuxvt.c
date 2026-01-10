@@ -106,6 +106,14 @@ static int useVsync = 0;               // If 1, fsync after write (no tearing bu
 static int fpsFd = -1;                 // File descriptor for FPS logging
 #define FPS_UPDATE_INTERVAL_MS 1000  // Update FPS every second
 
+// Frame rate cap - default 35 FPS (DOOM's native TICRATE)
+// Configurable via -fps N (0 = uncapped, 20 = Pager display, 35 = DOOM native)
+#define DEFAULT_TARGET_FPS 35
+static int targetFps = DEFAULT_TARGET_FPS;
+static int frameTimeMs = (1000 / DEFAULT_TARGET_FPS);  // ~28ms
+static uint32_t lastFrameTime = 0;
+static int useFrameCap = 1;    // Enabled by default (35 FPS)
+
 // framebuffer stuff 
 static uint8_t *fbPtr;
 // These are non-static so net_lobby.c can access them for lobby drawing
@@ -665,6 +673,23 @@ void DG_Init() {
 		printf("Prefetch enabled (experimental)\n");
 	}
 
+	// Check for -fps N to override default frame rate cap
+	// Default: 35 FPS (DOOM native). Use -fps 0 for uncapped.
+	int fpsArg = M_CheckParmWithArgs("-fps", 1);
+	if (fpsArg) {
+		targetFps = atoi(myargv[fpsArg + 1]);
+		if (targetFps > 0) {
+			useFrameCap = 1;
+			frameTimeMs = 1000 / targetFps;
+			printf("Frame cap: %d FPS (%dms/frame)\n", targetFps, frameTimeMs);
+		} else {
+			useFrameCap = 0;
+			printf("Uncapped framerate\n");
+		}
+	} else {
+		printf("Frame cap: %d FPS (default, use -fps N to change)\n", DEFAULT_TARGET_FPS);
+	}
+
 	// Set up signal handlers for clean exit
 	signal(SIGINT, cleanup_and_exit);
 	signal(SIGTERM, cleanup_and_exit);
@@ -829,6 +854,17 @@ static inline uint16_t rgb32_to_rgb565(uint32_t pixel) {
 }
 
 void DG_DrawFrame() {
+	// Frame rate cap - don't render faster than target FPS
+	// This provides consistent frame timing and reduces CPU usage
+	if (useFrameCap) {
+		uint32_t now = DG_GetTicksMs();
+		uint32_t elapsed = now - lastFrameTime;
+		if (elapsed < (uint32_t)frameTimeMs) {
+			usleep((frameTimeMs - elapsed) * 1000);
+		}
+		lastFrameTime = DG_GetTicksMs();
+	}
+
 	if (fbIs16Bit) {
 		// OPTIMIZED 16-bit RGB565 path with 90° CCW rotation
 		// Uses precomputed palette lookup - reads directly from I_VideoBuffer (8-bit indexed)
@@ -997,7 +1033,6 @@ int main(int argc, char **argv) {
 	{
 		doomgeneric_Tick();
 	}
-
 
 	return 0;
 }
