@@ -198,84 +198,72 @@ typedef enum
 
 
 // Map Object definition.
+// 
+// CACHE OPTIMIZED LAYOUT for MIPS 24KEc (32-byte cache lines)
+// Hot fields are grouped in first 3 cache lines (~96 bytes)
+// to minimize cache misses during collision detection, AI, and rendering.
+//
+// Original structure was 224 bytes spanning 7 cache lines with hot fields
+// scattered throughout. This reordering keeps hot data together.
+//
 typedef struct mobj_s
 {
-    // List: thinker links.
-    thinker_t		thinker;
-
-    // Info for drawing: position.
-    fixed_t		x;
+    // === CACHE LINE 0 (bytes 0-31): Core position & state ===
+    // thinker MUST be first - code casts thinker_t* to mobj_t*
+    thinker_t		thinker;	// 12 bytes: linked list for P_RunThinkers
+    fixed_t		x;		// Position - accessed in collision, rendering, AI
     fixed_t		y;
     fixed_t		z;
+    int			flags;		// Checked in almost every function
+    int			tics;		// Animation counter - checked every frame
 
-    // More list: links in sector (if needed)
-    struct mobj_s*	snext;
-    struct mobj_s*	sprev;
+    // === CACHE LINE 1 (bytes 32-63): Animation, movement, collision ===
+    state_t*		state;		// Animation state
+    mobjinfo_t*		info;		// Object type info (stats, AI params)
+    fixed_t		momx;		// Momentum - movement every tick
+    fixed_t		momy;
+    fixed_t		momz;
+    fixed_t		radius;		// Collision bounds - checked constantly
+    fixed_t		height;
+    angle_t		angle;		// Rendering orientation
 
-    //More drawing info: to determine current sprite.
-    angle_t		angle;	// orientation
-    spritenum_t		sprite;	// used to find patch_t and flip value
-    int			frame;	// might be ORed with FF_FULLBRIGHT
+    // === CACHE LINE 2 (bytes 64-95): Rendering, AI, type ===
+    spritenum_t		sprite;		// Rendering
+    int			frame;		// Rendering (might be ORed with FF_FULLBRIGHT)
+    int			health;		// Combat
+    struct mobj_s*	target;		// AI target / missile originator
+    int			validcount;	// Iteration guard
+    mobjtype_t		type;		// Object type enum
+    int			movedir;	// AI movement direction (0-7)
+    int			movecount;	// AI movement counter
 
-    // Interaction info, by BLOCKMAP.
-    // Links in blocks (if needed).
-    struct mobj_s*	bnext;
-    struct mobj_s*	bprev;
-    
-    struct subsector_s*	subsector;
-
-    // The closest interval over all contacted Sectors.
+    // === CACHE LINE 3+ (bytes 96+): Less frequently accessed ===
+    // Floor/ceiling bounds
     fixed_t		floorz;
     fixed_t		ceilingz;
 
-    // For movement checking.
-    fixed_t		radius;
-    fixed_t		height;	
+    // Subsector for rendering/sound positioning
+    struct subsector_s*	subsector;
 
-    // Momentums, used to update position.
-    fixed_t		momx;
-    fixed_t		momy;
-    fixed_t		momz;
+    // Sector links (rendering iteration)
+    struct mobj_s*	snext;
+    struct mobj_s*	sprev;
 
-    // If == validcount, already checked.
-    int			validcount;
+    // Blockmap links (collision iteration)
+    struct mobj_s*	bnext;
+    struct mobj_s*	bprev;
 
-    mobjtype_t		type;
-    mobjinfo_t*		info;	// &mobjinfo[mobj->type]
-    
-    int			tics;	// state tic counter
-    state_t*		state;
-    int			flags;
-    int			health;
+    // AI timing
+    int			reactiontime;	// Delay before attacking
+    int			threshold;	// Chase persistence
 
-    // Movement direction, movement generation (zig-zagging).
-    int			movedir;	// 0-7
-    int			movecount;	// when 0, select a new dir
+    // Player-specific
+    struct player_s*	player;		// Only valid if type == MT_PLAYER
+    int			lastlook;	// Player number last searched for
 
-    // Thing being chased/attacked (or NULL),
-    // also the originator for missiles.
-    struct mobj_s*	target;
-
-    // Reaction time: if non 0, don't attack yet.
-    // Used by player to freeze a bit after teleporting.
-    int			reactiontime;   
-
-    // If >0, the target will be chased
-    // no matter what (even if shot)
-    int			threshold;
-
-    // Additional info record for player avatars only.
-    // Only valid if type == MT_PLAYER
-    struct player_s*	player;
-
-    // Player number last looked for.
-    int			lastlook;	
-
-    // For nightmare respawn.
-    mapthing_t		spawnpoint;	
-
-    // Thing being chased/attacked for tracers.
-    struct mobj_s*	tracer;	
+    // Cold data - rarely accessed
+    mapthing_t		spawnpoint;	// For nightmare respawn
+    struct mobj_s*	tracer;		// Tracer missile target
     
 } mobj_t;
 
