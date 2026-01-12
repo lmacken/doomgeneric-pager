@@ -44,42 +44,43 @@ CFLAGS+=-DPOTATO_MODE=1
 $(info Building POTATO MODE 1: Half-width (2x horizontal chunky pixels))
 endif
 endif
-# Optimize for speed
-# -O3: Maximum speed optimization
-# -march=24kec: Target MIPS 24KEc CPU with DSP extensions
-# -mdsp: Enable MIPS DSP ASE instructions
-# -funroll-loops: Unroll loops for speed
-# -ffast-math: Faster floating point
-# -fomit-frame-pointer: Free up a register
-# -fprefetch-loop-arrays: Generate prefetch instructions for arrays (CPU supports it!)
-# -ftree-loop-vectorize: Enable loop vectorization
-# -finline-functions: Inline small functions for speed
-# -mbranch-likely: Use branch likely instructions for better branch prediction
+# =============================================================================
+# COMPILER OPTIMIZATION FLAGS - Based on quantitative A/B testing
+# See perf/OPTIMIZATION_RESEARCH.md for test data
+# =============================================================================
+#
+# TESTED GOOD:
+#   -O3, -flto, -march=24kec, -mtune=24kec, -mbranch-likely
+#   -ffast-math, -funroll-loops, -fomit-frame-pointer, -finline-functions
+#   -fprefetch-loop-arrays (GCC auto-prefetch for all loops)
+#
+# TESTED BAD:
+#   -mdsp: Negative performance impact in testing
+#   Manual render prefetch: 35% SLOWER due to lookup-table cache pollution
+#
 CFLAGS+=-O3 -Wall -DNORMALUNIX -DLINUX -D_DEFAULT_SOURCE
-CFLAGS+=-march=24kec -mtune=24kec -mdsp -mbranch-likely
+CFLAGS+=-march=24kec -mtune=24kec -mbranch-likely
 CFLAGS+=-ffast-math -funroll-loops -fomit-frame-pointer
 CFLAGS+=-finline-functions
-# LTO: ON by default for best performance
+
+# LTO: ON by default (10% smaller binary, 17% fewer wasted NOPs)
 # Disable with NO_LTO=1 for faster builds during development
 ifndef NO_LTO
 CFLAGS+=-flto
 LDFLAGS+=-flto
 endif
 
-# GCC auto-prefetch: ON by default when LTO is enabled (they work well together)
-# Disable with NO_GCC_PREFETCH=1
-# WARNING: DO NOT use with manual render prefetch without LTO (causes 45ms stalls)
-ifndef NO_LTO
+# GCC auto-prefetch: ON by default
+# Adds ~150 prefetch instructions across all loops (game logic, rendering, etc.)
+# MIPS 24KEc queues prefetch during idle cycles - essentially "free"
+# Disable with NO_GCC_PREFETCH=1 for testing
 ifndef NO_GCC_PREFETCH
 CFLAGS+=-fprefetch-loop-arrays
 endif
-endif
 
-# Manual render prefetch: OFF by default (GCC prefetch is better with LTO)
-# Enable with MANUAL_RENDER_PREFETCH=1
-ifndef MANUAL_RENDER_PREFETCH
-CFLAGS+=-DNO_RENDER_PREFETCH
-endif
+# Manual render prefetch: OFF permanently
+# PROVEN 35% SLOWER in microbenchmark - lookup-table pattern pollutes cache
+# See perf/PREFETCH_ANALYSIS.md for details
 
 # Cache-aligned arrays: ON by default for hot rendering arrays (vissprites, drawsegs)
 # Disable with NO_CACHE_ALIGN=1
@@ -111,44 +112,30 @@ LIBS+=-lm -lc
 #
 # DEFAULT CONFIGURATION (optimized based on quantitative A/B testing):
 #   - LTO enabled (-flto)
-#   - GCC auto-prefetch ENABLED (-fprefetch-loop-arrays) - works great with LTO
-#   - Manual render prefetch DISABLED (-DNO_RENDER_PREFETCH) - conflicts with GCC
+#   - GCC auto-prefetch ENABLED (-fprefetch-loop-arrays) - ~150 pref instructions
+#   - Manual render prefetch DISABLED - proven 35% slower (cache pollution)
 #   - Cache-aligned arrays ENABLED (-DCACHE_ALIGN_ARRAYS) - vissprites, drawsegs
 #   - Cache-optimized mobj_t layout ENABLED
+#   - HOT_FUNC attributes on render/game loop functions
 #
-# See perf/OPTIMIZATION_RESEARCH.md for detailed analysis.
-#
-# -----------------------------------------------------------------------------
-# BENCHMARK RESULTS (subjective +/++/+++ scoring)
-# -----------------------------------------------------------------------------
-#   LTO + GCC prefetch + aligned arrays: +++ (BEST)
-#   LTO + GCC prefetch (01a418b code):   ++
-#   LTO + manual render prefetch:        +
-#   MIPS16 compressed instructions:      - (code density not worth overhead)
+# See perf/OPTIMIZATION_RESEARCH.md and perf/PREFETCH_ANALYSIS.md
 #
 # -----------------------------------------------------------------------------
-# EXPERIMENTAL FLAGS (tested, NOT recommended for production)
+# BENCHMARK RESULTS (real framebuffer microbenchmark)
 # -----------------------------------------------------------------------------
-# These were tested and found to hurt or not help performance:
-#
-#   -DINLINE_FIXED_MATH        Inline FixedMul/FixedDiv - no measurable benefit
-#   -DTHINKER_PREFETCH_ENABLED Prefetch in P_RunThinkers - no measurable benefit
-#   -DAI_THROTTLE_SIMPLE       FastDoom AI throttle - HURTS (min 8 FPS, 4 drops)
-#   -DAI_THROTTLE_TIERED       3-tier AI throttle - HURTS (min 16 FPS, 1 drop)
-#   -DDOUBLE_BUFFER_ENABLED    Double buffering - HURTS (subjective ---)
-#   -DDIRTY_RECTANGLE_ENABLED  Dirty rectangles - no benefit on SPI
-#   -mips16                    MIPS16 compressed - HURTS (overhead > I-cache benefit)
-#   MANUAL_RENDER_PREFETCH=1   Manual prefetch - conflicts with GCC prefetch
+#   No prefetch:              3574 us/frame (baseline)
+#   GCC auto-prefetch:        ~3500 us/frame (+2% - helps game logic)
+#   Manual render prefetch:   4820 us/frame (-35% SLOWER!)
 #
 # -----------------------------------------------------------------------------
-# OPTIONAL FLAGS (for specific use cases)
+# COMPILE-TIME OPTIONS
 # -----------------------------------------------------------------------------
-#   -DMOBJ_ORIGINAL_LAYOUT     Revert to vanilla mobj_t field order (for testing)
-#   -DNO_RENDER_PREFETCH       Disable render loop prefetching
-#   -DADAPTIVE_VISPLANES       Dynamic visplane limits (for SIGIL compatibility)
-#   -DUNCAPPED_FPS             Remove 35 FPS cap (for benchmarking)
-#   -DFPS_DEBUG_ENABLED        Enable FPS logging to /tmp/doom_fps.log
-#   -DVSYNC_ENABLED            Force VSync (very slow, ~10 FPS)
+#   NO_GCC_PREFETCH=1          Disable GCC auto-prefetch (for testing)
+#   -DDISABLE_FRAME_CAP        Uncapped framerate (for benchmarking)
+#   -DENABLE_FPS_DEBUG         Enable FPS logging to /tmp/fps.log
+#   -DENABLE_VSYNC             Force fsync after write (~10 FPS, no tearing)
+#   -DINLINE_FIXED_MATH        Inline FixedMul/FixedDiv
+#   -DCOLUMN_PREFETCH_ENABLED  Prefetch texture in R_DrawColumn
 #
 ifdef EXTRA_CFLAGS
 CFLAGS+=$(EXTRA_CFLAGS)

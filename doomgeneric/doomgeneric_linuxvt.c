@@ -8,6 +8,7 @@
 #include "i_system.h"
 #include "doomdef.h"   // For GS_LEVEL constant
 #include "doomstat.h"  // For gamestate variable
+#include "pager_opts.h"  // PAGER: function attributes
 
 // XXX: HACK
 // Linux's input-event-codes.h and doomkeys.h have many collisions.
@@ -97,25 +98,28 @@ static inline void *aligned_alloc_cached(size_t size) {
 // timing stuff
 static struct timeval startTime;
 
-// FPS and timing tracking (writes to file, not stderr - stderr crashes SIGIL!)
+// Compile-time debug/perf options (enable via -D flags in Makefile):
+// -DENABLE_VSYNC       - fsync after write (no tearing but ~10 FPS) 
+// -DENABLE_FPS_DEBUG   - FPS logging to /tmp/fps.log
+// -DDISABLE_FRAME_CAP  - Uncapped framerate (for benchmarking)
+
+#ifdef ENABLE_FPS_DEBUG
 static uint32_t frameCount = 0;
 static uint32_t lastFpsTime = 0;
 static uint32_t currentFps = 0;
-static uint32_t totalWriteTimeMs = 0;  // Accumulated write() time
-static uint32_t avgWriteTimeMs = 0;    // Average write time per frame
-static int useVsync = 0;               // If 1, fsync after write (no tearing but ~10 FPS)
-static int fpsFd = -1;                 // File descriptor for FPS logging
-static int useFpsDebug = 0;            // If 1, enable FPS logging (disabled by default)
-#define FPS_UPDATE_INTERVAL_MS 1000  // Update FPS every second
+static uint32_t totalWriteTimeMs = 0;
+static uint32_t avgWriteTimeMs = 0;
+static int fpsFd = -1;
+#define FPS_UPDATE_INTERVAL_MS 1000
+#endif
 
-// Frame rate cap - default 35 FPS (DOOM's native TICRATE)
-// Configurable via -fps N (0 = uncapped, 35 = DOOM native)
+// Frame rate cap - 35 FPS (DOOM's native TICRATE)
 // Uses clock_nanosleep with absolute timing for precise, consistent frame pacing
+#ifndef DISABLE_FRAME_CAP
 #define DEFAULT_TARGET_FPS 35
-static int targetFps = DEFAULT_TARGET_FPS;
-static long frameTimeNs = 1000000000L / DEFAULT_TARGET_FPS;  // ~28.57ms in nanoseconds
-static struct timespec nextFrameTime;  // For clock_nanosleep absolute timing
-static int useFrameCap = 1;    // Enabled by default (35 FPS)
+static long frameTimeNs = 1000000000L / DEFAULT_TARGET_FPS;  // ~28.57ms
+static struct timespec nextFrameTime;
+#endif
 
 // framebuffer stuff 
 static uint8_t *fbPtr;
@@ -155,7 +159,9 @@ static void cleanup_and_exit(int sig) {
 	if (srcYLookup) free(srcYLookup);
 	if (srcXLookupAspect) free(srcXLookupAspect);
 	if (srcYLookupAspect) free(srcYLookupAspect);
+#ifdef ENABLE_FPS_DEBUG
 	if (fpsFd >= 0) close(fpsFd);
+#endif
 	if (fbFd >= 0) close(fbFd);
 	_exit(sig ? 128 + sig : 0);
 }
@@ -183,9 +189,11 @@ static int dpadRightPressed = 0;
 // Track active combo key (to release when Green is released)
 static int comboKeyActive = 0;
 
-// Prefetch optimization - enabled by default for better cache performance
-// Use -noprefetch to disable if issues occur
-static int usePrefetch = 1;
+// Prefetch optimization - compile-time control
+// DISABLED BY DEFAULT: Microbenchmark proved 35% SLOWER due to
+// non-sequential lookup table access pattern polluting 32KB L1 cache.
+// Enable with -DUSE_RENDER_PREFETCH=1 only for testing.
+// See: perf/PREFETCH_ANALYSIS.md
 
 // XXX: HACK
 // Linux's evdev system doesn't make it feasible to just use
@@ -666,43 +674,19 @@ void DG_Init() {
 	struct fb_var_screeninfo info;
 	struct fb_fix_screeninfo finfo;
 
-	// Check for -vsync command line arg (uses fsync for tear-free but ~10 FPS)
-	if (M_CheckParm("-vsync")) {
-		useVsync = 1;
-		printf("VSync enabled (tear-free but slower)\n");
-	}
-	
-	// Prefetch control (enabled by default for better cache performance)
-	if (M_CheckParm("-noprefetch")) {
-		usePrefetch = 0;
-		printf("Prefetch disabled\n");
-	}
-
-	// Check for -fps N to override default frame rate cap
-	// Default: 35 FPS (DOOM native). Use -fps 0 for uncapped.
-	int fpsArg = M_CheckParmWithArgs("-fps", 1);
-	if (fpsArg) {
-		targetFps = atoi(myargv[fpsArg + 1]);
-		if (targetFps > 0) {
-			useFrameCap = 1;
-			frameTimeNs = 1000000000L / targetFps;
-			printf("Frame cap: %d FPS (%ldms/frame)\n", targetFps, frameTimeNs / 1000000L);
-		} else {
-			useFrameCap = 0;
-			printf("Uncapped framerate\n");
-		}
-	} else {
-		printf("Frame cap: %d FPS (default, use -fps N to change)\n", DEFAULT_TARGET_FPS);
-	}
-
-	// Check for -fpsdebug to enable FPS logging
-	if (M_CheckParm("-fpsdebug")) {
-		useFpsDebug = 1;
-		printf("FPS debug logging enabled (/tmp/fps.log)\n");
-	}
-
-	// Initialize precise frame timing using clock_nanosleep
+	// Print compile-time config
+#ifdef ENABLE_VSYNC
+	printf("VSync: enabled (compile-time)\n");
+#endif
+#ifdef DISABLE_FRAME_CAP
+	printf("Frame cap: disabled (compile-time)\n");
+#else
+	printf("Frame cap: %d FPS\n", DEFAULT_TARGET_FPS);
 	clock_gettime(CLOCK_MONOTONIC, &nextFrameTime);
+#endif
+#ifdef ENABLE_FPS_DEBUG
+	printf("FPS debug: enabled (/tmp/fps.log)\n");
+#endif
 
 	// Set up signal handlers for clean exit
 	signal(SIGINT, cleanup_and_exit);
@@ -867,17 +851,17 @@ static inline uint16_t rgb32_to_rgb565(uint32_t pixel) {
 	return ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
 }
 
-void DG_DrawFrame() {
+HOT_FUNC void DG_DrawFrame() {
+#ifndef DISABLE_FRAME_CAP
 	// Frame rate cap using clock_nanosleep with absolute timing
-	// This provides precise, consistent frame pacing without drift
-	if (useFrameCap) {
-		nextFrameTime.tv_nsec += frameTimeNs;
-		while (nextFrameTime.tv_nsec >= 1000000000L) {
-			nextFrameTime.tv_nsec -= 1000000000L;
-			nextFrameTime.tv_sec++;
-		}
-		clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &nextFrameTime, NULL);
+	// Provides precise, consistent frame pacing without drift
+	nextFrameTime.tv_nsec += frameTimeNs;
+	if (nextFrameTime.tv_nsec >= 1000000000L) {
+		nextFrameTime.tv_nsec -= 1000000000L;
+		nextFrameTime.tv_sec++;
 	}
+	clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &nextFrameTime, NULL);
+#endif
 
 	if (fbIs16Bit) {
 		// OPTIMIZED 16-bit RGB565 path with 90° CCW rotation
@@ -889,9 +873,8 @@ void DG_DrawFrame() {
 		const uint16_t *palette = rgb565_palette;
 		
 		// Use aspect-correct rendering for title/menu screens, stretched for gameplay
-		int useAspectCorrect = (gamestate != GS_LEVEL);
-		
-		if (useAspectCorrect && srcXLookupAspect && srcYLookupAspect) {
+		// UNLIKELY: gameplay (GS_LEVEL) is far more common than menus
+		if (UNLIKELY(gamestate != GS_LEVEL) && srcXLookupAspect && srcYLookupAspect) {
 			// Clear buffer first (for black bars at top/bottom)
 			memset(renderBuffer, 0, renderBufferSize);
 			
@@ -902,18 +885,22 @@ void DG_DrawFrame() {
 				unsigned int srcX = srcXLookupAspect[y];
 				const unsigned int *yLookup = srcYLookupAspect;
 				
-				// Prefetch next row's lookup value
-				if (usePrefetch && y + 1 < aspectOutH) {
-					__builtin_prefetch(&srcXLookupAspect[y + 1], 0, 3);
+#ifdef USE_RENDER_PREFETCH
+				// Prefetch lookup table 8 entries ahead (32-byte cache line = 8 ints)
+				if (y + 8 < aspectOutH) {
+					__builtin_prefetch(&srcXLookupAspect[y + 8], 0, 3);
 				}
+#endif
 				
 				// Process 4 pixels at a time with direct palette lookup
 				unsigned int x = 0;
 				for (; x + 3 < aspectOutW; x += 4) {
+#ifdef USE_RENDER_PREFETCH
 					// Prefetch ahead in source buffer
-					if (usePrefetch && x + 16 < aspectOutW) {
+					if (x + 16 < aspectOutW) {
 						__builtin_prefetch(&srcBuf[yLookup[x+16] * DOOMGENERIC_RESX + srcX], 0, 0);
 					}
+#endif
 					dst[x]   = palette[srcBuf[yLookup[x]   * DOOMGENERIC_RESX + srcX]];
 					dst[x+1] = palette[srcBuf[yLookup[x+1] * DOOMGENERIC_RESX + srcX]];
 					dst[x+2] = palette[srcBuf[yLookup[x+2] * DOOMGENERIC_RESX + srcX]];
@@ -926,24 +913,28 @@ void DG_DrawFrame() {
 			}
 		} else {
 			// Full-screen stretched rendering (gameplay with FOV correction)
-			// Direct palette lookup from I_VideoBuffer
+			// Nearest-neighbor scaling: crisp pixels, authentic retro look
 			for (unsigned int y = 0; y < scaledOutH; y++) {
 				uint16_t *dst = renderBuffer + (y + scaledOffY) * fbWidth;
 				unsigned int srcX = srcXLookup[y];
 				const unsigned int *yLookup = srcYLookup;
 				
-				// Prefetch next row's lookup value
-				if (usePrefetch && y + 1 < scaledOutH) {
-					__builtin_prefetch(&srcXLookup[y + 1], 0, 3);
+#ifdef USE_RENDER_PREFETCH
+				// Prefetch lookup table 8 entries ahead (32-byte cache line = 8 ints)
+				if (y + 8 < scaledOutH) {
+					__builtin_prefetch(&srcXLookup[y + 8], 0, 3);
 				}
+#endif
 				
 				// Process 4 pixels at a time with direct palette lookup
 				unsigned int x = 0;
 				for (; x + 3 < scaledOutW; x += 4) {
+#ifdef USE_RENDER_PREFETCH
 					// Prefetch ahead in source buffer
-					if (usePrefetch && x + 16 < scaledOutW) {
+					if (x + 16 < scaledOutW) {
 						__builtin_prefetch(&srcBuf[yLookup[x+16] * DOOMGENERIC_RESX + srcX], 0, 0);
 					}
+#endif
 					dst[x]   = palette[srcBuf[yLookup[x]   * DOOMGENERIC_RESX + srcX]];
 					dst[x+1] = palette[srcBuf[yLookup[x+1] * DOOMGENERIC_RESX + srcX]];
 					dst[x+2] = palette[srcBuf[yLookup[x+2] * DOOMGENERIC_RESX + srcX]];
@@ -956,14 +947,18 @@ void DG_DrawFrame() {
 			}
 		}
 		
-		// Write frame to display (measure time)
+		// Write frame to display
+#ifdef ENABLE_FPS_DEBUG
 		uint32_t writeStart = DG_GetTicksMs();
+#endif
 		lseek(fbFd, 0, SEEK_SET);
 		write(fbFd, renderBuffer, renderBufferSize);
-		if (useVsync) {
-			fsync(fbFd);  // Wait for SPI transfer (~95ms, ~10 FPS but no tearing)
-		}
+#ifdef ENABLE_VSYNC
+		fsync(fbFd);  // Wait for SPI transfer (~95ms, ~10 FPS but no tearing)
+#endif
+#ifdef ENABLE_FPS_DEBUG
 		totalWriteTimeMs += DG_GetTicksMs() - writeStart;
+#endif
 	} else {
 		// Original 32-bit mmap path
 		for (int line = 0; line < DOOMGENERIC_RESY; line++) {
@@ -975,30 +970,28 @@ void DG_DrawFrame() {
 		}
 	}
 
-	// FPS tracking - only when -fpsdebug is enabled
-	// Writes to file (stderr causes SIGIL to crash!)
-	if (useFpsDebug) {
-		frameCount++;
-		uint32_t now = DG_GetTicksMs();
-		if (now - lastFpsTime >= FPS_UPDATE_INTERVAL_MS) {
-			currentFps = (frameCount * 1000) / (now - lastFpsTime);
-			avgWriteTimeMs = frameCount > 0 ? totalWriteTimeMs / frameCount : 0;
-			uint32_t displayFps = avgWriteTimeMs > 0 ? 1000 / avgWriteTimeMs : 0;
-			// Write to file instead of stderr - stderr causes crashes on intensive maps
-			if (fpsFd < 0) {
-				fpsFd = open("/tmp/fps.log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
-			}
-			if (fpsFd >= 0) {
-				char buf[64];
-				int len = snprintf(buf, sizeof(buf), "FPS: %u | write: %ums | display: ~%u fps\n", 
-					currentFps, avgWriteTimeMs, displayFps);
-				write(fpsFd, buf, len);
-			}
-			frameCount = 0;
-			totalWriteTimeMs = 0;
-			lastFpsTime = now;
+#ifdef ENABLE_FPS_DEBUG
+	// FPS tracking - writes to file (stderr causes SIGIL to crash!)
+	frameCount++;
+	uint32_t now = DG_GetTicksMs();
+	if (now - lastFpsTime >= FPS_UPDATE_INTERVAL_MS) {
+		currentFps = (frameCount * 1000) / (now - lastFpsTime);
+		avgWriteTimeMs = frameCount > 0 ? totalWriteTimeMs / frameCount : 0;
+		uint32_t displayFps = avgWriteTimeMs > 0 ? 1000 / avgWriteTimeMs : 0;
+		if (fpsFd < 0) {
+			fpsFd = open("/tmp/fps.log", O_WRONLY | O_CREAT | O_TRUNC, 0644);
 		}
+		if (fpsFd >= 0) {
+			char buf[64];
+			int len = snprintf(buf, sizeof(buf), "FPS: %u | write: %ums | display: ~%u fps\n", 
+				currentFps, avgWriteTimeMs, displayFps);
+			write(fpsFd, buf, len);
+		}
+		frameCount = 0;
+		totalWriteTimeMs = 0;
+		lastFpsTime = now;
 	}
+#endif
 
 	checkKeys();
 }
@@ -1040,7 +1033,8 @@ int DG_GetKey(int* pressed, unsigned char* doomKey) {
 }
 
 void DG_SetWindowTitle(const char * title) {
-	printf("Window Title: %s\n", title);
+	// Silenced - no window in framebuffer mode
+	(void)title;
 }
 
 int main(int argc, char **argv) {

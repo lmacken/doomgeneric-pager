@@ -24,6 +24,7 @@
 #include "doomdef.h" 
 #include "doomkeys.h"
 #include "doomstat.h"
+#include "pager_opts.h"  // PAGER: function attributes
 
 #include "deh_main.h"
 #include "deh_misc.h"
@@ -851,7 +852,7 @@ boolean G_Responder (event_t* ev)
 // G_Ticker
 // Make ticcmd_ts for the players.
 //
-void G_Ticker (void) 
+HOT_FUNC void G_Ticker (void) 
 { 
     int		i;
     int		buf; 

@@ -34,6 +34,7 @@
 
 #include "r_local.h"
 #include "r_sky.h"
+#include "pager_opts.h"  // PAGER: function attributes
 
 
 
@@ -860,7 +861,7 @@ void R_SetupFrame (player_t* player)
 //
 // R_RenderView
 //
-void R_RenderPlayerView (player_t* player)
+HOT_FUNC void R_RenderPlayerView (player_t* player)
 {	
     R_SetupFrame (player);
 

@@ -29,6 +29,7 @@
 #include "w_wad.h"
 
 #include "r_local.h"
+#include "pager_opts.h"  // PAGER: function attributes for hot code
 
 // Needs access to LFB (guess what).
 #include "v_video.h"
@@ -105,7 +106,7 @@ int			dccount;
 // The texture is accessed via dc_source with frac as index.
 // Compile with: -DCOLUMN_PREFETCH_ENABLED
 //
-void R_DrawColumn (void) 
+HOT_FUNC void R_DrawColumn (void) 
 { 
     int			count; 
     byte*		dest; 
@@ -115,7 +116,7 @@ void R_DrawColumn (void)
     count = dc_yh - dc_yl; 
 
     // Zero length, column does not exceed a pixel.
-    if (count < 0) 
+    if (UNLIKELY(count < 0)) 
 	return; 
 				 
 #ifdef RANGECHECK 
@@ -221,7 +222,7 @@ void R_DrawColumn (void)
 #endif
 
 
-void R_DrawColumnLow (void) 
+HOT_FUNC void R_DrawColumnLow (void) 
 { 
     int			count; 
     byte*		dest; 
@@ -603,7 +604,7 @@ int			dscount;
 
 //
 // Draws the actual span.
-void R_DrawSpan (void) 
+HOT_FUNC void R_DrawSpan (void) 
 { 
     unsigned int position, step;
     byte *dest;
@@ -732,7 +733,7 @@ void R_DrawSpan (void)
 //
 // Again..
 //
-void R_DrawSpanLow (void)
+HOT_FUNC void R_DrawSpanLow (void)
 {
     unsigned int position, step;
     unsigned int xtemp, ytemp;

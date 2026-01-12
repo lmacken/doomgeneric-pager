@@ -22,6 +22,7 @@
 #include "p_local.h"
 
 #include "doomstat.h"
+#include "pager_opts.h"  // PAGER: function attributes
 
 
 int	leveltime;
@@ -110,7 +111,7 @@ void P_AllocateThinker (thinker_t*	thinker)
 //
 // Compile with: -DTHINKER_PREFETCH_ENABLED
 //
-void P_RunThinkers (void)
+HOT_FUNC void P_RunThinkers (void)
 {
     thinker_t*	currentthinker;
 #ifdef THINKER_PREFETCH_ENABLED
