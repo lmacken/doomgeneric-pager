@@ -654,9 +654,71 @@ void A_Look (mobj_t* actor)
 // Actor has a melee attack,
 // so it tries to close as fast as possible
 //
+// PAGER OPTIMIZATION: Distance-based AI throttling
+//
+// Two modes available:
+//
+// AI_THROTTLE_SIMPLE (FastDoom-style):
+//   Enemies >1024 units (~32 map units) think every 2nd tic
+//   Simple, minimal overhead, good for most cases
+//
+// AI_THROTTLE_TIERED (Custom 3-tier):
+//   Near (<32 units): every tic
+//   Mid (32-64 units): every 2nd tic  
+//   Far (>128 units): every 4th tic
+//   More aggressive, better for crowded maps
+//
+// Source: FastDoom AI optimization
+// Expected gain: 10-15% game logic reduction
+//
+// Compile with: -DAI_THROTTLE_SIMPLE or -DAI_THROTTLE_TIERED
+//
+#ifdef AI_THROTTLE_TIERED
+#define AI_THROTTLE_DIST_MID    (2048 << FRACBITS)  // ~64 map units
+#define AI_THROTTLE_DIST_FAR    (4096 << FRACBITS)  // ~128 map units
+#endif
+
 void A_Chase (mobj_t*	actor)
 {
     int		delta;
+
+#ifdef AI_THROTTLE_SIMPLE
+    // FastDoom-style: simple distance check
+    // Enemies >1024 units away think every 2nd tic
+    if (actor->target && players[0].mo)
+    {
+        fixed_t dist = P_AproxDistance(actor->x - players[0].mo->x,
+                                       actor->y - players[0].mo->y);
+        if (dist > (1024 << FRACBITS) && (leveltime & 1))
+            return;
+    }
+#endif
+
+#ifdef AI_THROTTLE_TIERED
+    // 3-tier distance-based AI throttling
+    if (actor->target && players[0].mo)
+    {
+        fixed_t dist = P_AproxDistance(actor->x - players[0].mo->x,
+                                       actor->y - players[0].mo->y);
+        
+        // Use actor pointer as pseudo-random offset
+        int actor_offset = ((size_t)actor >> 4) & 0x3;
+        
+        if (dist > AI_THROTTLE_DIST_FAR)
+        {
+            // Very far: think every 4th tic
+            if (((leveltime + actor_offset) & 3) != 0)
+                return;
+        }
+        else if (dist > AI_THROTTLE_DIST_MID)
+        {
+            // Medium distance: think every 2nd tic
+            if (((leveltime + actor_offset) & 1) != 0)
+                return;
+        }
+        // Near enemies: always think
+    }
+#endif
 
     if (actor->reactiontime)
 	actor->reactiontime--;

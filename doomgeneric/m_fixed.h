@@ -20,8 +20,9 @@
 #ifndef __M_FIXED__
 #define __M_FIXED__
 
-
-
+#include <stdint.h>
+#include <stdlib.h>
+#include <limits.h>
 
 //
 // Fixed point, 32bit as 16.16.
@@ -31,9 +32,40 @@
 
 typedef int fixed_t;
 
-fixed_t FixedMul	(fixed_t a, fixed_t b);
-fixed_t FixedDiv	(fixed_t a, fixed_t b);
+//
+// PAGER OPTIMIZATION: Inline fixed-point math
+//
+// When INLINE_FIXED_MATH is defined, FixedMul and FixedDiv are inlined.
+// This eliminates function call overhead on 165+ call sites in hot paths
+// (rendering, collision, AI).
+//
+// Source: FastDoom, GZDoom optimization techniques
+// Expected gain: 5-10% in hot code paths
+//
+// Compile with: -DINLINE_FIXED_MATH
+//
+#ifdef INLINE_FIXED_MATH
 
+static inline fixed_t FixedMul(fixed_t a, fixed_t b)
+{
+    return (fixed_t)(((int64_t)a * (int64_t)b) >> FRACBITS);
+}
 
+static inline fixed_t FixedDiv(fixed_t a, fixed_t b)
+{
+    if ((abs(a) >> 14) >= abs(b))
+    {
+        return (a ^ b) < 0 ? INT_MIN : INT_MAX;
+    }
+    return (fixed_t)(((int64_t)a << FRACBITS) / b);
+}
 
-#endif
+#else
+
+// Standard function declarations (implementations in m_fixed.c)
+fixed_t FixedMul(fixed_t a, fixed_t b);
+fixed_t FixedDiv(fixed_t a, fixed_t b);
+
+#endif // INLINE_FIXED_MATH
+
+#endif // __M_FIXED__

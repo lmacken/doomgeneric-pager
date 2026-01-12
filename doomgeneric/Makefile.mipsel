@@ -11,14 +11,39 @@ else
 endif
 
 # OpenWrt SDK musl-based cross-compiler for mipsel_24kc
-# Using QEMU wrapper to run x86-64 SDK on ARM64 host
+# Default: Use SDK directly (supports LTO, better optimization)
+# Set USE_QEMU_CC=1 to use QEMU wrapper instead (for debugging)
+ifdef USE_QEMU_CC
 CC=$(shell pwd)/qemu-gcc-wrapper.sh
 CROSS_COMPILE=$(shell pwd)/qemu-gcc-wrapper.sh
-# Keep Doom at 320x200 internally, we scale in output code
+else
+CC=mipsel-openwrt-linux-musl-gcc
+CROSS_COMPILE=mipsel-openwrt-linux-musl-
+endif
+# =============================================================================
+# POTATO MODE - Low resolution rendering for maximum performance
+# =============================================================================
+# Uses Doom's built-in low-detail mode (pixel doubling) rather than changing
+# internal resolution. This keeps all game math working correctly.
+#
+# POTATO_MODE=1 : Half-width (160 effective columns, 2x horizontal pixels)
+# POTATO_MODE=2 : Quarter mode (adds 2x vertical pixels too)
+# Default: Full resolution (320x200)
+#
+# Keep internal resolution at 320x200 - potato mode uses pixel doubling
 CFLAGS+=-DDOOMGENERIC_RESX=320 -DDOOMGENERIC_RESY=200
-# Widen FOV to compensate for aspect ratio stretch (480/320)/(222/200) = 1.35x
-# Original FOV is 2048, adjusted: 2048 * 1.35 = 2765
+# Widen FOV to compensate for aspect ratio stretch
 CFLAGS+=-DFIELDOFVIEW=2765
+
+ifdef POTATO_MODE
+ifeq ($(POTATO_MODE),2)
+CFLAGS+=-DPOTATO_MODE=2
+$(info Building POTATO MODE 2: Quarter resolution (2x2 chunky pixels))
+else
+CFLAGS+=-DPOTATO_MODE=1
+$(info Building POTATO MODE 1: Half-width (2x horizontal chunky pixels))
+endif
+endif
 # Optimize for speed
 # -O3: Maximum speed optimization
 # -march=24kec: Target MIPS 24KEc CPU with DSP extensions
@@ -33,9 +58,101 @@ CFLAGS+=-DFIELDOFVIEW=2765
 CFLAGS+=-O3 -Wall -DNORMALUNIX -DLINUX -D_DEFAULT_SOURCE
 CFLAGS+=-march=24kec -mtune=24kec -mdsp -mbranch-likely
 CFLAGS+=-ffast-math -funroll-loops -fomit-frame-pointer
-CFLAGS+=-fprefetch-loop-arrays -finline-functions
+CFLAGS+=-finline-functions
+# LTO: ON by default for best performance
+# Disable with NO_LTO=1 for faster builds during development
+ifndef NO_LTO
+CFLAGS+=-flto
+LDFLAGS+=-flto
+endif
+
+# GCC auto-prefetch: ON by default when LTO is enabled (they work well together)
+# Disable with NO_GCC_PREFETCH=1
+# WARNING: DO NOT use with manual render prefetch without LTO (causes 45ms stalls)
+ifndef NO_LTO
+ifndef NO_GCC_PREFETCH
+CFLAGS+=-fprefetch-loop-arrays
+endif
+endif
+
+# Manual render prefetch: OFF by default (GCC prefetch is better with LTO)
+# Enable with MANUAL_RENDER_PREFETCH=1
+ifndef MANUAL_RENDER_PREFETCH
+CFLAGS+=-DNO_RENDER_PREFETCH
+endif
+
+# Cache-aligned arrays: ON by default for hot rendering arrays (vissprites, drawsegs)
+# Disable with NO_CACHE_ALIGN=1
+# NOTE: Only 2 arrays aligned - more alignment tested worse (++ vs +++)
+ifndef NO_CACHE_ALIGN
+CFLAGS+=-DCACHE_ALIGN_ARRAYS
+endif
+
+# GCC cache hints: OFF by default (tested, reduced PREF 149->70, scored ++ vs +++)
+# Enable with CACHE_HINTS=1 to try: --param=l1-cache-size=16 --param=l1-cache-line-size=32
+ifdef CACHE_HINTS
+CFLAGS+=--param=l1-cache-size=16 --param=l1-cache-line-size=32
+CFLAGS+=--param=simultaneous-prefetches=2
+endif
+
+# Differential copy: FastDoom-style frame diffing
+# Only writes changed rows to display, reducing SPI bandwidth
+# Enable with DIFF_COPY=1
+ifdef DIFF_COPY
+CFLAGS+=-DDIFF_COPY_ENABLED
+endif
+
 LDFLAGS+=-static
 LIBS+=-lm -lc
+
+# =============================================================================
+# PAGER OPTIMIZATION FLAGS
+# =============================================================================
+#
+# DEFAULT CONFIGURATION (optimized based on quantitative A/B testing):
+#   - LTO enabled (-flto)
+#   - GCC auto-prefetch ENABLED (-fprefetch-loop-arrays) - works great with LTO
+#   - Manual render prefetch DISABLED (-DNO_RENDER_PREFETCH) - conflicts with GCC
+#   - Cache-aligned arrays ENABLED (-DCACHE_ALIGN_ARRAYS) - vissprites, drawsegs
+#   - Cache-optimized mobj_t layout ENABLED
+#
+# See perf/OPTIMIZATION_RESEARCH.md for detailed analysis.
+#
+# -----------------------------------------------------------------------------
+# BENCHMARK RESULTS (subjective +/++/+++ scoring)
+# -----------------------------------------------------------------------------
+#   LTO + GCC prefetch + aligned arrays: +++ (BEST)
+#   LTO + GCC prefetch (01a418b code):   ++
+#   LTO + manual render prefetch:        +
+#   MIPS16 compressed instructions:      - (code density not worth overhead)
+#
+# -----------------------------------------------------------------------------
+# EXPERIMENTAL FLAGS (tested, NOT recommended for production)
+# -----------------------------------------------------------------------------
+# These were tested and found to hurt or not help performance:
+#
+#   -DINLINE_FIXED_MATH        Inline FixedMul/FixedDiv - no measurable benefit
+#   -DTHINKER_PREFETCH_ENABLED Prefetch in P_RunThinkers - no measurable benefit
+#   -DAI_THROTTLE_SIMPLE       FastDoom AI throttle - HURTS (min 8 FPS, 4 drops)
+#   -DAI_THROTTLE_TIERED       3-tier AI throttle - HURTS (min 16 FPS, 1 drop)
+#   -DDOUBLE_BUFFER_ENABLED    Double buffering - HURTS (subjective ---)
+#   -DDIRTY_RECTANGLE_ENABLED  Dirty rectangles - no benefit on SPI
+#   -mips16                    MIPS16 compressed - HURTS (overhead > I-cache benefit)
+#   MANUAL_RENDER_PREFETCH=1   Manual prefetch - conflicts with GCC prefetch
+#
+# -----------------------------------------------------------------------------
+# OPTIONAL FLAGS (for specific use cases)
+# -----------------------------------------------------------------------------
+#   -DMOBJ_ORIGINAL_LAYOUT     Revert to vanilla mobj_t field order (for testing)
+#   -DNO_RENDER_PREFETCH       Disable render loop prefetching
+#   -DADAPTIVE_VISPLANES       Dynamic visplane limits (for SIGIL compatibility)
+#   -DUNCAPPED_FPS             Remove 35 FPS cap (for benchmarking)
+#   -DFPS_DEBUG_ENABLED        Enable FPS logging to /tmp/doom_fps.log
+#   -DVSYNC_ENABLED            Force VSync (very slow, ~10 FPS)
+#
+ifdef EXTRA_CFLAGS
+CFLAGS+=$(EXTRA_CFLAGS)
+endif
 
 # subdirectory for objects
 OBJDIR=build

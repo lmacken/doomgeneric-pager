@@ -74,7 +74,12 @@ int			showMessages = 1;
 	
 
 // Blocky mode, has default, 0 = high, 1 = normal
-int			detailLevel = 0;
+// POTATO_MODE forces low detail (chunky pixels) for better performance
+#ifdef POTATO_MODE
+int			detailLevel = 1;  // Low detail - pixel doubling
+#else
+int			detailLevel = 0;  // High detail - normal
+#endif
 int			screenblocks = 10;
 
 // temp for screenblocks (0-9)

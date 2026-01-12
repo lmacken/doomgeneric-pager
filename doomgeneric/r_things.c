@@ -278,7 +278,12 @@ void R_InitSpriteDefs (char** namelist)
 //
 // GAME FUNCTIONS
 //
+#ifdef CACHE_ALIGN_ARRAYS
+// PAGER OPTIMIZATION: Cache-align hot arrays for MIPS 24KEc (32-byte cache lines)
+vissprite_t	vissprites[MAXVISSPRITES] __attribute__((aligned(32)));
+#else
 vissprite_t	vissprites[MAXVISSPRITES];
+#endif
 vissprite_t*	vissprite_p;
 int		newvissprite;
 

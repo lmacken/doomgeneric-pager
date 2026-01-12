@@ -91,13 +91,49 @@ void P_AllocateThinker (thinker_t*	thinker)
 //
 // P_RunThinkers
 //
+// PAGER OPTIMIZATION: Prefetch next thinker(s) while processing current one.
+//
+// When THINKER_PREFETCH_ENABLED is defined, we prefetch the next thinkers
+// in the linked list to hide memory latency.
+//
+// The thinker list is a linked list scattered in heap memory. Each ->next
+// dereference is a potential cache miss (~100+ cycles on MIPS 24KEc).
+// By prefetching 2 thinkers ahead, we hide memory latency.
+//
+// Prefetch strategy:
+// - Prefetch next->next to hide L1 miss latency
+// - Each thinker is at least sizeof(thinker_t) but usually mobj_t (~200 bytes)
+// - MIPS 24KEc has 32KB L1 D-cache with 32-byte lines
+//
+// Source: Cache optimization analysis (perf/CACHE_OPTIMIZATION.md)
+// Expected gain: 5-10% game logic reduction
+//
+// Compile with: -DTHINKER_PREFETCH_ENABLED
+//
 void P_RunThinkers (void)
 {
     thinker_t*	currentthinker;
+#ifdef THINKER_PREFETCH_ENABLED
+    thinker_t*	nextthinker;
+#endif
 
     currentthinker = thinkercap.next;
     while (currentthinker != &thinkercap)
     {
+#ifdef THINKER_PREFETCH_ENABLED
+	// Save next pointer before potential Z_Free
+	nextthinker = currentthinker->next;
+	
+	// Prefetch 2 thinkers ahead to hide memory latency
+	// Level 0 = no temporal locality (won't be reused soon)
+	if (nextthinker != &thinkercap) {
+	    __builtin_prefetch(nextthinker, 0, 0);
+	    if (nextthinker->next != &thinkercap) {
+		__builtin_prefetch(nextthinker->next, 0, 0);
+	    }
+	}
+#endif
+
 	if ( currentthinker->function.acv == (actionf_v)(-1) )
 	{
 	    // time to remove it
@@ -110,7 +146,11 @@ void P_RunThinkers (void)
 	    if (currentthinker->function.acp1)
 		currentthinker->function.acp1 (currentthinker);
 	}
+#ifdef THINKER_PREFETCH_ENABLED
+	currentthinker = nextthinker;
+#else
 	currentthinker = currentthinker->next;
+#endif
     }
 }
 

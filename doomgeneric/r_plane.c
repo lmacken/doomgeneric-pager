@@ -41,9 +41,44 @@ planefunction_t		ceilingfunc;
 // opening
 //
 
-// Here comes the obnoxious "visplane".
-#define MAXVISPLANES	512  // Increased from 128 for complex maps like SIGIL
+//
+// PAGER OPTIMIZATION: Adaptive visplane limits
+//
+// When ADAPTIVE_VISPLANES is defined, we start at the vanilla Doom limit (128)
+// and automatically expand when needed, up to 768. This prevents crashes on
+// complex maps like SIGIL while maintaining vanilla behavior on simple maps.
+//
+// Without this flag, we use a fixed 512 limit (increased from vanilla 128).
+//
+// Source: Custom optimization for SIGIL compatibility
+// Expected gain: Crash prevention on complex maps
+//
+// Compile with: -DADAPTIVE_VISPLANES
+//
+#ifdef ADAPTIVE_VISPLANES
+
+#define MAXVISPLANES_POOL       768   // Static allocation size
+#define MAXVISPLANES_DEFAULT    128   // Start at vanilla Doom limit
+#define MAXVISPLANES_STEP1      256
+#define MAXVISPLANES_STEP2      512
+#define MAXVISPLANES_STEP3      768
+#define VISPLANE_EXPAND_THRESHOLD 0.9
+#define VISPLANE_MERGE_THRESHOLD  8
+
+visplane_t		visplanes[MAXVISPLANES_POOL];
+static int		visplane_limit = MAXVISPLANES_DEFAULT;
+static int		visplane_peak = 0;
+static int		visplane_merges = 0;
+static int		visplane_expansions = 0;
+
+#else
+
+// Fixed limit (increased from vanilla 128 for SIGIL)
+#define MAXVISPLANES	512
 visplane_t		visplanes[MAXVISPLANES];
+
+#endif
+
 visplane_t*		lastvisplane;
 visplane_t*		floorplane;
 visplane_t*		ceilingplane;
@@ -204,6 +239,26 @@ void R_ClearPlanes (void)
 
 
 
+#ifdef ADAPTIVE_VISPLANES
+// Auto-expand visplane limit when approaching threshold
+static void R_ExpandVisplaneLimit(void)
+{
+    int new_limit = visplane_limit;
+    
+    if (visplane_limit < MAXVISPLANES_STEP1)
+        new_limit = MAXVISPLANES_STEP1;
+    else if (visplane_limit < MAXVISPLANES_STEP2)
+        new_limit = MAXVISPLANES_STEP2;
+    else if (visplane_limit < MAXVISPLANES_STEP3)
+        new_limit = MAXVISPLANES_STEP3;
+    
+    if (new_limit > visplane_limit) {
+        visplane_limit = new_limit;
+        visplane_expansions++;
+    }
+}
+#endif
+
 //
 // R_FindPlane
 //
@@ -214,6 +269,11 @@ R_FindPlane
   int		lightlevel )
 {
     visplane_t*	check;
+#ifdef ADAPTIVE_VISPLANES
+    visplane_t* bestmatch = NULL;
+    int bestdiff = VISPLANE_MERGE_THRESHOLD + 1;
+    int current_count;
+#endif
 	
     if (picnum == skyflatnum)
     {
@@ -227,11 +287,63 @@ R_FindPlane
 	    && picnum == check->picnum
 	    && lightlevel == check->lightlevel)
 	{
+#ifdef ADAPTIVE_VISPLANES
+	    return check;
+#else
 	    break;
+#endif
 	}
     }
     
-			
+#ifdef ADAPTIVE_VISPLANES
+    // No exact match - need to allocate
+    current_count = lastvisplane - visplanes;
+    
+    // Auto-expand if approaching limit
+    if (current_count >= (int)(visplane_limit * VISPLANE_EXPAND_THRESHOLD))
+        R_ExpandVisplaneLimit();
+    
+    // At hard limit - graceful degradation
+    if (current_count >= visplane_limit && visplane_limit >= MAXVISPLANES_STEP3)
+    {
+        // Find closest match for merging
+        for (check=visplanes; check<lastvisplane; check++)
+        {
+            if (picnum == check->picnum)
+            {
+                int heightdiff = abs((height >> FRACBITS) - (check->height >> FRACBITS));
+                if (heightdiff < bestdiff)
+                {
+                    bestdiff = heightdiff;
+                    bestmatch = check;
+                }
+            }
+        }
+        
+        if (bestmatch && bestdiff <= VISPLANE_MERGE_THRESHOLD)
+        {
+            visplane_merges++;
+            return bestmatch;
+        }
+        
+        // Emergency: return any plane with same texture
+        for (check=visplanes; check<lastvisplane; check++)
+        {
+            if (picnum == check->picnum)
+            {
+                visplane_merges++;
+                return check;
+            }
+        }
+        visplane_merges++;
+        return visplanes;  // Last resort
+    }
+    
+    // Normal allocation
+    check = lastvisplane++;
+    if ((lastvisplane - visplanes) > visplane_peak)
+        visplane_peak = lastvisplane - visplanes;
+#else
     if (check < lastvisplane)
 	return check;
 		
@@ -239,6 +351,7 @@ R_FindPlane
 	I_Error ("R_FindPlane: no more visplanes");
 		
     lastvisplane++;
+#endif
 
     check->height = height;
     check->picnum = picnum;
@@ -266,6 +379,9 @@ R_CheckPlane
     int		unionl;
     int		unionh;
     int		x;
+#ifdef ADAPTIVE_VISPLANES
+    int		current_count;
+#endif
 	
     if (start < pl->minx)
     {
@@ -301,6 +417,23 @@ R_CheckPlane
 	// use the same one
 	return pl;		
     }
+
+#ifdef ADAPTIVE_VISPLANES
+    current_count = lastvisplane - visplanes;
+    
+    // Auto-expand if approaching limit
+    if (current_count >= (int)(visplane_limit * VISPLANE_EXPAND_THRESHOLD))
+        R_ExpandVisplaneLimit();
+    
+    // At hard limit: reuse existing plane
+    if (current_count >= visplane_limit && visplane_limit >= MAXVISPLANES_STEP3)
+    {
+        visplane_merges++;
+        pl->minx = unionl;
+        pl->maxx = unionh;
+        return pl;
+    }
+#endif
 	
     // make a new visplane
     lastvisplane->height = pl->height;
@@ -308,6 +441,10 @@ R_CheckPlane
     lastvisplane->lightlevel = pl->lightlevel;
     
     pl = lastvisplane++;
+#ifdef ADAPTIVE_VISPLANES
+    if ((lastvisplane - visplanes) > visplane_peak)
+        visplane_peak = lastvisplane - visplanes;
+#endif
     pl->minx = start;
     pl->maxx = stop;
 
@@ -371,9 +508,15 @@ void R_DrawPlanes (void)
 	I_Error ("R_DrawPlanes: drawsegs overflow (%i)",
 		 ds_p - drawsegs);
     
+#ifdef ADAPTIVE_VISPLANES
+    if (lastvisplane - visplanes > MAXVISPLANES_POOL)
+	I_Error ("R_DrawPlanes: visplane overflow (%i)",
+		 lastvisplane - visplanes);
+#else
     if (lastvisplane - visplanes > MAXVISPLANES)
 	I_Error ("R_DrawPlanes: visplane overflow (%i)",
 		 lastvisplane - visplanes);
+#endif
     
     if (lastopening - openings > MAXOPENINGS)
 	I_Error ("R_DrawPlanes: opening overflow (%i)",

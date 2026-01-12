@@ -16,8 +16,6 @@
 //	Fixed point implementation.
 //
 
-
-
 #include "stdlib.h"
 
 #include "doomtype.h"
@@ -25,10 +23,12 @@
 
 #include "m_fixed.h"
 
-
-
-
-// Fixme. __USE_C_FIXED__ or something.
+//
+// When INLINE_FIXED_MATH is defined, these functions are provided as
+// static inline in m_fixed.h instead. This file is still compiled but
+// the functions are excluded to avoid duplicate symbols.
+//
+#ifndef INLINE_FIXED_MATH
 
 fixed_t
 FixedMul
@@ -37,8 +37,6 @@ FixedMul
 {
     return ((int64_t) a * (int64_t) b) >> FRACBITS;
 }
-
-
 
 //
 // FixedDiv, C version.
@@ -59,4 +57,6 @@ fixed_t FixedDiv(fixed_t a, fixed_t b)
 	return (fixed_t) result;
     }
 }
+
+#endif // !INLINE_FIXED_MATH
 

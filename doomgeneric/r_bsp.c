@@ -43,7 +43,11 @@ line_t*		linedef;
 sector_t*	frontsector;
 sector_t*	backsector;
 
+#ifdef CACHE_ALIGN_ARRAYS
+drawseg_t	drawsegs[MAXDRAWSEGS] __attribute__((aligned(32)));
+#else
 drawseg_t	drawsegs[MAXDRAWSEGS];
+#endif
 drawseg_t*	ds_p;
 
 

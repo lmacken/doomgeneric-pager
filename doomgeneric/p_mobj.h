@@ -198,14 +198,63 @@ typedef enum
 
 
 // Map Object definition.
-// 
+//
+// PAGER OPTIMIZATION: Cache-optimized field ordering
+//
+// When MOBJ_CACHE_OPTIMIZE is defined (default), hot fields are grouped
+// in first 3 cache lines (~96 bytes) to minimize cache misses.
+//
+// When MOBJ_ORIGINAL_LAYOUT is defined, use vanilla Doom field order
+// for A/B benchmarking comparison.
+//
+// MIPS 24KEc: 32KB L1 D-cache, 32-byte lines, no L2
+// Every L1 miss goes to main memory (~100+ cycles)
+//
+// Compile with: -DMOBJ_ORIGINAL_LAYOUT to disable optimization
+//
+#ifdef MOBJ_ORIGINAL_LAYOUT
+
+// ORIGINAL vanilla Doom field order (for A/B testing)
+// Hot fields scattered across 7 cache lines = many cache misses
+typedef struct mobj_s
+{
+    thinker_t       thinker;        // Thinker links (MUST be first)
+    fixed_t         x, y, z;        // Position
+    struct mobj_s*  snext;          // Sector links
+    struct mobj_s*  sprev;
+    angle_t         angle;          // Orientation
+    spritenum_t     sprite;         // Rendering
+    int             frame;
+    struct mobj_s*  bnext;          // Block links
+    struct mobj_s*  bprev;
+    struct subsector_s* subsector;
+    fixed_t         floorz;         // Movement bounds
+    fixed_t         ceilingz;
+    fixed_t         radius;         // Collision
+    fixed_t         height;
+    fixed_t         momx, momy, momz; // Momentum
+    int             validcount;
+    mobjtype_t      type;
+    mobjinfo_t*     info;
+    int             tics;           // Animation
+    state_t*        state;
+    int             flags;
+    int             health;
+    int             movedir;        // AI
+    int             movecount;
+    struct mobj_s*  target;
+    int             reactiontime;
+    int             threshold;
+    struct player_s* player;
+    int             lastlook;
+    mapthing_t      spawnpoint;
+    struct mobj_s*  tracer;
+} mobj_t;
+
+#else
+
 // CACHE OPTIMIZED LAYOUT for MIPS 24KEc (32-byte cache lines)
-// Hot fields are grouped in first 3 cache lines (~96 bytes)
-// to minimize cache misses during collision detection, AI, and rendering.
-//
-// Original structure was 224 bytes spanning 7 cache lines with hot fields
-// scattered throughout. This reordering keeps hot data together.
-//
+// Hot fields grouped in first 3 cache lines (~96 bytes)
 typedef struct mobj_s
 {
     // === CACHE LINE 0 (bytes 0-31): Core position & state ===
@@ -238,34 +287,23 @@ typedef struct mobj_s
     int			movecount;	// AI movement counter
 
     // === CACHE LINE 3+ (bytes 96+): Less frequently accessed ===
-    // Floor/ceiling bounds
     fixed_t		floorz;
     fixed_t		ceilingz;
-
-    // Subsector for rendering/sound positioning
     struct subsector_s*	subsector;
-
-    // Sector links (rendering iteration)
     struct mobj_s*	snext;
     struct mobj_s*	sprev;
-
-    // Blockmap links (collision iteration)
     struct mobj_s*	bnext;
     struct mobj_s*	bprev;
-
-    // AI timing
-    int			reactiontime;	// Delay before attacking
-    int			threshold;	// Chase persistence
-
-    // Player-specific
-    struct player_s*	player;		// Only valid if type == MT_PLAYER
-    int			lastlook;	// Player number last searched for
-
-    // Cold data - rarely accessed
-    mapthing_t		spawnpoint;	// For nightmare respawn
-    struct mobj_s*	tracer;		// Tracer missile target
+    int			reactiontime;
+    int			threshold;
+    struct player_s*	player;
+    int			lastlook;
+    mapthing_t		spawnpoint;
+    struct mobj_s*	tracer;
     
 } mobj_t;
+
+#endif // MOBJ_ORIGINAL_LAYOUT
 
 
 

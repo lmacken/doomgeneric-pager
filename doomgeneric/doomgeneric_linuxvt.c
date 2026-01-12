@@ -57,6 +57,7 @@
 #include <dirent.h>
 #include <sys/mman.h>
 #include <sys/time.h>
+#include <time.h>
 #include <sys/ioctl.h>
 #include <linux/input.h>
 #include <linux/input-event-codes.h>
@@ -108,11 +109,12 @@ static int useFpsDebug = 0;            // If 1, enable FPS logging (disabled by 
 #define FPS_UPDATE_INTERVAL_MS 1000  // Update FPS every second
 
 // Frame rate cap - default 35 FPS (DOOM's native TICRATE)
-// Configurable via -fps N (0 = uncapped, 20 = Pager display, 35 = DOOM native)
+// Configurable via -fps N (0 = uncapped, 35 = DOOM native)
+// Uses clock_nanosleep with absolute timing for precise, consistent frame pacing
 #define DEFAULT_TARGET_FPS 35
 static int targetFps = DEFAULT_TARGET_FPS;
-static int frameTimeMs = (1000 / DEFAULT_TARGET_FPS);  // ~28ms
-static uint32_t lastFrameTime = 0;
+static long frameTimeNs = 1000000000L / DEFAULT_TARGET_FPS;  // ~28.57ms in nanoseconds
+static struct timespec nextFrameTime;  // For clock_nanosleep absolute timing
 static int useFrameCap = 1;    // Enabled by default (35 FPS)
 
 // framebuffer stuff 
@@ -683,8 +685,8 @@ void DG_Init() {
 		targetFps = atoi(myargv[fpsArg + 1]);
 		if (targetFps > 0) {
 			useFrameCap = 1;
-			frameTimeMs = 1000 / targetFps;
-			printf("Frame cap: %d FPS (%dms/frame)\n", targetFps, frameTimeMs);
+			frameTimeNs = 1000000000L / targetFps;
+			printf("Frame cap: %d FPS (%ldms/frame)\n", targetFps, frameTimeNs / 1000000L);
 		} else {
 			useFrameCap = 0;
 			printf("Uncapped framerate\n");
@@ -698,6 +700,9 @@ void DG_Init() {
 		useFpsDebug = 1;
 		printf("FPS debug logging enabled (/tmp/fps.log)\n");
 	}
+
+	// Initialize precise frame timing using clock_nanosleep
+	clock_gettime(CLOCK_MONOTONIC, &nextFrameTime);
 
 	// Set up signal handlers for clean exit
 	signal(SIGINT, cleanup_and_exit);
@@ -863,15 +868,15 @@ static inline uint16_t rgb32_to_rgb565(uint32_t pixel) {
 }
 
 void DG_DrawFrame() {
-	// Frame rate cap - don't render faster than target FPS
-	// This provides consistent frame timing and reduces CPU usage
+	// Frame rate cap using clock_nanosleep with absolute timing
+	// This provides precise, consistent frame pacing without drift
 	if (useFrameCap) {
-		uint32_t now = DG_GetTicksMs();
-		uint32_t elapsed = now - lastFrameTime;
-		if (elapsed < (uint32_t)frameTimeMs) {
-			usleep((frameTimeMs - elapsed) * 1000);
+		nextFrameTime.tv_nsec += frameTimeNs;
+		while (nextFrameTime.tv_nsec >= 1000000000L) {
+			nextFrameTime.tv_nsec -= 1000000000L;
+			nextFrameTime.tv_sec++;
 		}
-		lastFrameTime = DG_GetTicksMs();
+		clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &nextFrameTime, NULL);
 	}
 
 	if (fbIs16Bit) {

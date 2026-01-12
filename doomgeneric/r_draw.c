@@ -99,6 +99,12 @@ int			dccount;
 // Thus a special case loop for very fast rendering can
 //  be used. It has also been used with Wolfenstein 3D.
 // 
+//
+// PAGER OPTIMIZATION: Column prefetch
+// Prefetch texture data ahead in the inner loop to hide memory latency.
+// The texture is accessed via dc_source with frac as index.
+// Compile with: -DCOLUMN_PREFETCH_ENABLED
+//
 void R_DrawColumn (void) 
 { 
     int			count; 
@@ -129,11 +135,21 @@ void R_DrawColumn (void)
     fracstep = dc_iscale; 
     frac = dc_texturemid + (dc_yl-centery)*fracstep; 
 
+#ifdef COLUMN_PREFETCH_ENABLED
+    // Prefetch first texture access
+    __builtin_prefetch(&dc_source[(frac>>FRACBITS)&127], 0, 1);
+#endif
+
     // Inner loop that does the actual texture mapping,
     //  e.g. a DDA-lile scaling.
     // This is as fast as it gets.
     do 
     {
+#ifdef COLUMN_PREFETCH_ENABLED
+	// Prefetch 8 pixels ahead in texture
+	if (count > 8)
+	    __builtin_prefetch(&dc_source[((frac + (fracstep << 3))>>FRACBITS)&127], 0, 1);
+#endif
 	// Re-map color indices from wall texture column
 	//  using a lighting/special effects LUT.
 	*dest = dc_colormap[dc_source[(frac>>FRACBITS)&127]];
