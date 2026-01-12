@@ -150,8 +150,12 @@ SRC_DOOM = dummy.o am_map.o doomdef.o doomstat.o dstrings.o d_event.o d_items.o 
 # Network sources for multiplayer support
 SRC_NET = net_packet.o net_io.o net_socket.o net_client.o net_server.o net_loop.o net_query.o net_dedicated.o net_lobby.o
 
+# Pager hardware interface
+SRC_PAGER = i_buzzer.o
+
 OBJS += $(addprefix $(OBJDIR)/, $(SRC_DOOM))
 OBJS += $(addprefix $(OBJDIR)/, $(SRC_NET))
+OBJS += $(addprefix $(OBJDIR)/, $(SRC_PAGER))
 
 all:	 $(OUTPUT)
 

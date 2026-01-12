@@ -23,6 +23,7 @@
 #include "net_packet.h"
 #include "net_socket.h"
 #include "w_wad.h"
+#include "i_buzzer.h"
 
 // Connection state
 typedef enum
@@ -186,6 +187,7 @@ boolean NET_CL_Connect(net_addr_t *addr, net_connect_data_t *data)
     {
         printf("NET_CL_Connect: Connected!\n");
         net_client_connected = true;
+        I_BuzzerConnected();  // Beep on successful connection
         return true;
     }
 
@@ -992,6 +994,15 @@ boolean NET_WaitForLaunch(void)
         // Update lobby display periodically or when player count changes
         if (net_client_received_wait_data) {
             if (net_client_wait_data.num_players != last_num_players || lobby_update_timer <= 0) {
+                // Buzz on player count change (but not on first update)
+                if (last_num_players >= 0) {
+                    if (net_client_wait_data.num_players > last_num_players) {
+                        I_BuzzerPlayerJoin();  // Player joined!
+                    } else if (net_client_wait_data.num_players < last_num_players) {
+                        I_BuzzerPlayerLeave();  // Player left
+                    }
+                }
+                
                 DG_DrawLobby(net_client_wait_data.num_players,
                             net_client_wait_data.max_players,
                             net_client_wait_data.is_controller,
@@ -1014,6 +1025,7 @@ boolean NET_WaitForLaunch(void)
         I_Sleep(50);
     }
     
+    I_BuzzerGameStart();  // Fanfare when game launches!
     fprintf(stderr, "NET_WaitForLaunch: Got LAUNCH signal, returning to game init...\n");
     return true;
 }
