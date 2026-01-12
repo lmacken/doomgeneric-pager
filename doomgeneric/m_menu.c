@@ -948,12 +948,7 @@ void M_VerifyNightmare(int key)
 
 void M_ChooseSkill(int choice)
 {
-    if (choice == nightmare)
-    {
-	M_StartMessage(DEH_String(NIGHTMARE),M_VerifyNightmare,true);
-	return;
-    }
-	
+    // Skip nightmare confirmation on embedded devices (no keyboard for 'y')
     G_DeferedInitNew(choice,epi+1,1);
     M_ClearMenus ();
 }
