@@ -727,50 +727,83 @@ boolean D_InitNetGame(net_connect_data_t *connect_data)
         {
             const char *best_addr = NULL;
             int retry;
+            boolean stay_in_automatch = true;
             
-            printf("Starting auto-matchmaking...\n");
-            DG_DrawAutoMatch();
-            
-            // Try up to 3 times to find a server
-            for (retry = 0; retry < 3 && best_addr == NULL; retry++)
+            while (stay_in_automatch)
             {
-                if (retry > 0)
+                best_addr = NULL;
+                
+                printf("Starting auto-matchmaking...\n");
+                DG_DrawAutoMatch();
+                
+                // Try up to 3 times to find a server
+                for (retry = 0; retry < 3 && best_addr == NULL; retry++)
                 {
-                    printf("Retry %d/3...\n", retry + 1);
-                    I_Sleep(500);  // Brief pause before retry
+                    if (retry > 0)
+                    {
+                        printf("Retry %d/3...\n", retry + 1);
+                        I_Sleep(500);  // Brief pause before retry
+                    }
+                    
+                    // Initialize and query servers
+                    NET_Query_Init();
+                    NET_Query_RunAll();  // Blocking query
+                    
+                    // Find best server
+                    best_addr = DG_Browser_GetAutoMatchAddress();
                 }
                 
-                // Initialize and query servers
-                NET_Query_Init();
-                NET_Query_RunAll();  // Blocking query
-                
-                // Find best server
-                best_addr = DG_Browser_GetAutoMatchAddress();
-            }
-            
-            if (best_addr == NULL)
-            {
-                printf("No suitable server found after 3 attempts!\n");
-                DG_DrawNoServers();
-                
-                // Wait for input then exit
-                while (DG_CheckLobbyInput() == 0)
+                if (best_addr == NULL)
                 {
-                    I_Sleep(50);
+                    printf("No suitable server found after 3 attempts!\n");
+                    DG_DrawNoServers();
+                    
+                    // Wait for input then exit
+                    while (DG_CheckLobbyInput() == 0)
+                    {
+                        I_Sleep(50);
+                    }
+                    I_Quit();
                 }
-                I_Quit();
+                
+                printf("Auto-matched to: %s\n", best_addr);
+                DG_DrawConnecting(best_addr);
+                
+                net_socket_module.InitClient();
+                addr = net_socket_module.ResolveAddress((char *)best_addr);
+                
+                if (addr == NULL)
+                {
+                    I_Error("Unable to resolve '%s'\n", best_addr);
+                }
+                
+                // Connect and wait in lobby
+                if (!NET_CL_Connect(addr, connect_data))
+                {
+                    printf("Failed to connect, retrying...\n");
+                    NET_Query_Shutdown();
+                    continue;
+                }
+                
+                printf("Connected to %s, entering lobby...\n", NET_AddrToString(addr));
+                
+                // Wait in lobby - returns false if user quits
+                if (NET_WaitForLaunch())
+                {
+                    // Game is starting!
+                    stay_in_automatch = false;
+                    result = true;
+                }
+                else
+                {
+                    // User quit lobby - search for another server
+                    printf("Returning to automatch...\n");
+                    NET_Query_Shutdown();
+                }
             }
             
-            printf("Auto-matched to: %s\n", best_addr);
-            DG_DrawConnecting(best_addr);
-            
-            net_socket_module.InitClient();
-            addr = net_socket_module.ResolveAddress((char *)best_addr);
-            
-            if (addr == NULL)
-            {
-                I_Error("Unable to resolve '%s'\n", best_addr);
-            }
+            // Skip the normal connect/wait flow below
+            return result;
         }
 
         //!
