@@ -273,27 +273,18 @@ void DG_DrawLoadingBrowser(const char *message)
     lobby_flush();
 }
 
-// Draw loading screen for auto-match with real-time progress
+// Draw loading screen for auto-match (static - no real-time updates)
+// Only draws on first call (ports_scanned == 0), ignores subsequent updates
 void DG_DrawLoadingAutoMatch(int servers_found, int ports_scanned)
 {
-    char buf[64];
+    // Only draw on first call to avoid flicker from rapid updates
+    if (ports_scanned > 0)
+        return;
     
-    lobby_clear(0x0841);  // Very dark gray
+    lobby_clear(0x0000);  // Black background
     
-    // Title bar
-    lobby_fill_rect(0, 0, LOBBY_WIDTH, 24, RGB565_DOOM_RED);
-    lobby_draw_centered(8, "DOOM DEATHMATCH", RGB565_WHITE);
-    
-    // Scanning status
-    lobby_draw_centered(70, "SCANNING FOR SERVERS", RGB565_YELLOW);
-    
-    // Real-time stats
-    snprintf(buf, sizeof(buf), "Port: %d", DEFAULT_BASE_PORT + ports_scanned - 1);
-    lobby_draw_centered(100, buf, RGB565_CYAN);
-    
-    snprintf(buf, sizeof(buf), "Found: %d server%s", 
-             servers_found, servers_found == 1 ? "" : "s");
-    lobby_draw_centered(130, buf, servers_found > 0 ? RGB565_GREEN : RGB565_WHITE);
+    lobby_draw_centered(100, "DEATHMATCH", RGB565_DOOM_RED);
+    lobby_draw_centered(130, "Finding servers...", RGB565_WHITE);
     
     lobby_flush();
 }
