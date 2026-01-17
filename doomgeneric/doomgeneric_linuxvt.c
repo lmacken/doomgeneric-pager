@@ -136,6 +136,10 @@ static int fbIs16Bit = 0; // 1 if framebuffer is 16-bit RGB565
 // Full-screen stretched (for gameplay with FOV correction)
 static unsigned int *srcXLookup = NULL;  // For each dest Y, source X
 static unsigned int *srcYLookup = NULL;  // For each dest X, source Y
+#ifdef PRECOMPUTE_ROW_OFFSETS
+static unsigned int *srcRowOffset = NULL;       // Precomputed: srcYLookup[x] * 320
+static unsigned int *srcRowOffsetAspect = NULL; // Precomputed for aspect-correct mode
+#endif
 static unsigned int scaledOutW = 0;
 static unsigned int scaledOutH = 0;
 static unsigned int scaledOffY = 0;
@@ -783,6 +787,13 @@ void DG_Init() {
 			srcYLookup[x] = ((scaledOutW - 1 - x) * DOOMGENERIC_RESY) / scaledOutW;
 			if (srcYLookup[x] >= DOOMGENERIC_RESY) srcYLookup[x] = DOOMGENERIC_RESY - 1;
 		}
+#ifdef PRECOMPUTE_ROW_OFFSETS
+		// Precompute row offsets: eliminates multiply in inner render loop
+		srcRowOffset = (unsigned int *)aligned_alloc_cached(scaledOutW * sizeof(unsigned int));
+		for (unsigned int x = 0; x < scaledOutW; x++) {
+			srcRowOffset[x] = srcYLookup[x] * DOOMGENERIC_RESX;
+		}
+#endif
 		
 		printf("Full-screen: Doom %dx%d -> Display %dx%d (scaled + rotated)\n", 
 		       DOOMGENERIC_RESX, DOOMGENERIC_RESY, fbWidth, fbHeight);
@@ -811,6 +822,13 @@ void DG_Init() {
 			srcYLookupAspect[x] = ((aspectOutW - 1 - x) * DOOMGENERIC_RESY) / aspectOutW;
 			if (srcYLookupAspect[x] >= DOOMGENERIC_RESY) srcYLookupAspect[x] = DOOMGENERIC_RESY - 1;
 		}
+#ifdef PRECOMPUTE_ROW_OFFSETS
+		// Precompute row offsets for aspect-correct mode
+		srcRowOffsetAspect = (unsigned int *)aligned_alloc_cached(aspectOutW * sizeof(unsigned int));
+		for (unsigned int x = 0; x < aspectOutW; x++) {
+			srcRowOffsetAspect[x] = srcYLookupAspect[x] * DOOMGENERIC_RESX;
+		}
+#endif
 		
 		printf("Aspect-correct: Doom %dx%d -> %dx%d rows + %d row offset (for menus)\n",
 		       DOOMGENERIC_RESX, DOOMGENERIC_RESY, aspectOutW, aspectOutH, aspectOffY);
@@ -894,6 +912,19 @@ HOT_FUNC void DG_DrawFrame() {
 				
 				// Process 4 pixels at a time with direct palette lookup
 				unsigned int x = 0;
+#ifdef PRECOMPUTE_ROW_OFFSETS
+				// Optimized: use precomputed row offsets (addition instead of multiply)
+				const unsigned int *rowOffset = srcRowOffsetAspect;
+				for (; x + 3 < aspectOutW; x += 4) {
+					dst[x]   = palette[srcBuf[rowOffset[x]   + srcX]];
+					dst[x+1] = palette[srcBuf[rowOffset[x+1] + srcX]];
+					dst[x+2] = palette[srcBuf[rowOffset[x+2] + srcX]];
+					dst[x+3] = palette[srcBuf[rowOffset[x+3] + srcX]];
+				}
+				for (; x < aspectOutW; x++) {
+					dst[x] = palette[srcBuf[rowOffset[x] + srcX]];
+				}
+#else
 				for (; x + 3 < aspectOutW; x += 4) {
 #ifdef USE_RENDER_PREFETCH
 					// Prefetch ahead in source buffer
@@ -910,6 +941,7 @@ HOT_FUNC void DG_DrawFrame() {
 				for (; x < aspectOutW; x++) {
 					dst[x] = palette[srcBuf[yLookup[x] * DOOMGENERIC_RESX + srcX]];
 				}
+#endif
 			}
 		} else {
 			// Full-screen stretched rendering (gameplay with FOV correction)
@@ -928,6 +960,19 @@ HOT_FUNC void DG_DrawFrame() {
 				
 				// Process 4 pixels at a time with direct palette lookup
 				unsigned int x = 0;
+#ifdef PRECOMPUTE_ROW_OFFSETS
+				// Optimized: use precomputed row offsets (addition instead of multiply)
+				const unsigned int *rowOffset = srcRowOffset;
+				for (; x + 3 < scaledOutW; x += 4) {
+					dst[x]   = palette[srcBuf[rowOffset[x]   + srcX]];
+					dst[x+1] = palette[srcBuf[rowOffset[x+1] + srcX]];
+					dst[x+2] = palette[srcBuf[rowOffset[x+2] + srcX]];
+					dst[x+3] = palette[srcBuf[rowOffset[x+3] + srcX]];
+				}
+				for (; x < scaledOutW; x++) {
+					dst[x] = palette[srcBuf[rowOffset[x] + srcX]];
+				}
+#else
 				for (; x + 3 < scaledOutW; x += 4) {
 #ifdef USE_RENDER_PREFETCH
 					// Prefetch ahead in source buffer
@@ -944,6 +989,7 @@ HOT_FUNC void DG_DrawFrame() {
 				for (; x < scaledOutW; x++) {
 					dst[x] = palette[srcBuf[yLookup[x] * DOOMGENERIC_RESX + srcX]];
 				}
+#endif
 			}
 		}
 		
