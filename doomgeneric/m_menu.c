@@ -645,7 +645,11 @@ void M_SaveSelect(int choice)
     saveSlot = choice;
     M_StringCopy(saveOldString,savegamestrings[choice], SAVESTRINGSIZE);
     if (!strcmp(savegamestrings[choice], EMPTYSTRING))
-	savegamestrings[choice][0] = 0;
+    {
+	// PAGER: Pre-fill empty slots with default name (no keyboard needed)
+	// User can just press Enter to confirm
+	DEH_snprintf(savegamestrings[choice], SAVESTRINGSIZE, "SAVE %d", choice + 1);
+    }
     saveCharIndex = strlen(savegamestrings[choice]);
 }
 
@@ -702,8 +706,10 @@ void M_QuickSave(void)
 	quickSaveSlot = -2;	// means to pick a slot now
 	return;
     }
-    DEH_snprintf(tempstring, 80, QSPROMPT, savegamestrings[quickSaveSlot]);
-    M_StartMessage(tempstring,M_QuickSaveResponse,true);
+    // PAGER: Skip Y/N confirmation - no keyboard to press Y
+    // Just save directly to the quicksave slot
+    M_DoSave(quickSaveSlot);
+    S_StartSound(NULL,sfx_swtchx);
 }
 
 
@@ -734,8 +740,10 @@ void M_QuickLoad(void)
 	M_StartMessage(DEH_String(QSAVESPOT),NULL,false);
 	return;
     }
-    DEH_snprintf(tempstring, 80, QLPROMPT, savegamestrings[quickSaveSlot]);
-    M_StartMessage(tempstring,M_QuickLoadResponse,true);
+    // PAGER: Skip Y/N confirmation - no keyboard to press Y
+    // Just load directly from the quicksave slot
+    M_LoadSelect(quickSaveSlot);
+    S_StartSound(NULL,sfx_swtchx);
 }
 
 

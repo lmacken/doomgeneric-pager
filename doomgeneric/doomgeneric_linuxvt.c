@@ -183,6 +183,7 @@ static unsigned int s_KeyQueueReadIndex = 0;
 // Track button states for combo detection
 static int redButtonPressed = 0;   // BTN_SOUTH (0x130)
 static int greenButtonPressed = 0; // BTN_EAST (0x131)
+static int powerButtonPressed = 0; // KEY_POWER (116)
 
 // Track D-pad states for green+direction combos
 static int dpadUpPressed = 0;
@@ -444,11 +445,54 @@ static void addKeyToQueue(int pressed, unsigned int keyCode) {
 		}
 	}
 	
+	// Track power button state for GREEN+POWER quicksave
+	if (keyCode == KEY_POWER) {
+		powerButtonPressed = pressed;
+	}
+	
 	// Track D-pad states
 	if (keyCode == KEY_UP) dpadUpPressed = pressed;
 	else if (keyCode == KEY_DOWN) dpadDownPressed = pressed;
 	else if (keyCode == KEY_LEFT) dpadLeftPressed = pressed;
 	else if (keyCode == KEY_RIGHT) dpadRightPressed = pressed;
+	
+	// GREEN + POWER = Quicksave (F6)
+	if (greenButtonPressed && powerButtonPressed && pressed &&
+	    (keyCode == KEY_POWER || keyCode == 0x131)) {
+		unsigned short qsaveData = (1 << 8) | DOOM_KEY_F6;
+		s_KeyQueue[s_KeyQueueWriteIndex] = qsaveData;
+		s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
+		// Also send key release
+		unsigned short qsaveRelease = (0 << 8) | DOOM_KEY_F6;
+		s_KeyQueue[s_KeyQueueWriteIndex] = qsaveRelease;
+		s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
+		return;  // Don't process further
+	}
+	
+	// RED + POWER = Quickload (F9)
+	if (redButtonPressed && powerButtonPressed && pressed &&
+	    (keyCode == KEY_POWER || keyCode == 0x130)) {
+		unsigned short qloadData = (1 << 8) | DOOM_KEY_F9;
+		s_KeyQueue[s_KeyQueueWriteIndex] = qloadData;
+		s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
+		// Also send key release
+		unsigned short qloadRelease = (0 << 8) | DOOM_KEY_F9;
+		s_KeyQueue[s_KeyQueueWriteIndex] = qloadRelease;
+		s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
+		return;  // Don't process further
+	}
+	
+	// POWER alone = Next weapon (']' key)
+	if (keyCode == KEY_POWER && pressed && !greenButtonPressed && !redButtonPressed) {
+		unsigned short nextWpnData = (1 << 8) | ']';
+		s_KeyQueue[s_KeyQueueWriteIndex] = nextWpnData;
+		s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
+		// Also send key release
+		unsigned short nextWpnRelease = (0 << 8) | ']';
+		s_KeyQueue[s_KeyQueueWriteIndex] = nextWpnRelease;
+		s_KeyQueueWriteIndex = (s_KeyQueueWriteIndex + 1) % KEYQUEUE_SIZE;
+		return;  // Don't process further
+	}
 	
 	// Both buttons pressed together = ESC (main menu)
 	if (redButtonPressed && greenButtonPressed && pressed) {
